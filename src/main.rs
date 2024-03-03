@@ -1,20 +1,30 @@
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
+//use std::fs::File;
+use std::io::{self, Write};
 use std::cmp::min;
 use std::process;
 use std::i64;
 use byteorder::{LittleEndian, WriteBytesExt};
 use num_complex::Complex;
+use std::sync::Arc;
 use soapysdr::Direction::Rx;
-use rustfft::FftPlanner;
+use rustfft::{FftPlanner, Fft};
+use rustfft::num_traits::Pow;
 use simple_moving_average::{SMA, NoSumSMA};
+
+// window of the running average
+const WINDOW_SIZE: usize = 10;
+// size of the fft
+const FFT_SIZE: usize = 2048;
+// sample rate of our SDR
+const SAMP_RATE: usize = 3_200_000;
+const FREQ: usize = 144_000_000;
 
 fn main() {
     println!("Starting nbfm-listener...");
 
     let dev_filter = "driver=rtlsdr";
     let channel = 0;
-    let fname = "testfile";
+    //let fname = "testfile";
     let mut num_samples = i64::MAX;
 
     let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
@@ -39,10 +49,8 @@ fn main() {
 
     let dev = soapysdr::Device::new(dev_args).expect("Error opening device");
 
-    let freq = 144e6;
-    dev.set_frequency(Rx, channel, freq, ()).expect("Failed to set frequency");
+    dev.set_frequency(Rx, channel, FREQ as f64, ()).expect("Failed to set frequency");
 
-    const SAMP_RATE: usize = 3_200_000;
     println!("{}", SAMP_RATE);
     dev.set_sample_rate(Rx, channel, SAMP_RATE as f64).expect("Failed to set sample rate");
 
@@ -62,32 +70,75 @@ fn main() {
 
     // TODO move fft into the loop above for continuous operation
 
+    // below this should move to a setup func
+    let mut planner = FftPlanner::new();
+    let fft = planner.plan_fft_forward(FFT_SIZE);
+
+    let mut fft_averages = vec!(NoSumSMA::<f32, f32, WINDOW_SIZE>::new(); FFT_SIZE);
+
+    // TODO can also use an integer multiple of FFT_SIZE
+    let sample_start_index = buf.len() - FFT_SIZE;
+    let mut fft_samp: [Complex<f32>; FFT_SIZE] = buf[sample_start_index..].try_into().unwrap();
+    calc_psd(fft, &mut fft_samp, &mut fft_averages);
+
+    // let mut fftoutfile = BufWriter::new(File::create("fft-output").expect("error opening output file"));
+    // write_scalar_file(&fftbuf, &mut fftoutfile).expect("failed to write fft output");
+
     stream.deactivate(None).expect("failed to deactivate stream");
-    println!("stream deactivated, starting FFT...");
+}
+
+fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE], fft_averages: &mut Vec<NoSumSMA::<f32, f32, WINDOW_SIZE>>) {
+    // https://pysdr.org/content/sampling.html#calculating-power-spectral-density
 
     // fft[0] -> DC
     // fft[len/2 + 1] -> nyquist f
     // 2 - len/2 are positive frequencies, each step is samp_rate/len(fft)
     // https://www.gaussianwaves.com/2015/11/interpreting-fft-results-complex-dft-frequency-bins-and-fftshift/
-    let fft_size = buf.len();
-    let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(fft_size);
 
     // TODO optimize using process_with_scratch()
-    fft.process(&mut buf);
+    fft.process(samples);
 
-    let fftbuf: Vec<f32> = buf.iter().map(|val| {val.norm()}).collect();
+    let fftbuf: Vec<f32> = samples.iter().map(|val| {
+        val.norm().pow(2) / (FFT_SIZE as f32 * SAMP_RATE as f32)
+    }).collect();
 
-    let mut fftoutfile = BufWriter::new(File::create("fft-output").expect("error opening output file"));
-    write_scalar_file(&fftbuf, &mut fftoutfile).expect("failed to write fft output");
+    let mut psd: Vec<f32> = fftbuf.iter().map(|val| {
+        val.log10()
+    }).collect();
+
+    fftshift(&mut psd);
+    let mut freq_range: Vec<f32> = vec!(0.0; FFT_SIZE);
+    for i in 0..FFT_SIZE {
+        freq_range[i] = FREQ as f32 + (SAMP_RATE as f32/-2.0) + ((SAMP_RATE/FFT_SIZE) * i) as f32;
+    }
+    //println!("{:?}", freq_range);
+
+    // plot psd vs freq_range and... it should work?
 
     // keep a running average of FFT values
-    const WINDOW_SIZE: usize = 10;
-    let mut fft_averages = vec!(NoSumSMA::<f32, f32, WINDOW_SIZE>::new(); fft_size);
 
-    for (index, element) in fftbuf.into_iter().enumerate() {
+    println!("{}", psd.len());
+    println!("{}", fft_averages.len());
+
+    for (index, element) in psd.into_iter().enumerate() {
         fft_averages[index].add_sample(element);
     }
+}
+
+// https://numpy.org/doc/stable/reference/generated/numpy.fft.fftshift.html
+fn fftshift(fftbuf: &mut Vec<f32>) {
+    let buflen: usize = fftbuf.len();
+    assert!(buflen%2 == 0, "fftshift can only handle ffts with even length");
+    // todo handle odd-length ffts, I guess, if I have to
+
+    // take the back half of the array, reverse it, and put it on the front
+    let neg_freqs = fftbuf.split_off(buflen/2);
+
+    for elem in neg_freqs.into_iter().rev() {
+        fftbuf.insert(0, elem);
+    }
+
+    // TODO holy crap write tests for this
 }
 
 fn write_scalar_file<W: Write>(src_buf: &[f32], mut dest_file: W) -> io::Result<()> {
