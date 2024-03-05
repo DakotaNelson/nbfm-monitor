@@ -25,7 +25,7 @@ fn main() {
     let channel = 0;
     //let fname = "testfile";
     // how many samples to capture before closing the stream
-    let mut num_samples = FFT_SIZE + 1;//i64::MAX;
+    let mut num_samples = i64::MAX;
 
     let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
     let dev_args = match devs.len() {
@@ -51,66 +51,71 @@ fn main() {
 
     dev.set_frequency(Rx, channel, FREQ as f64, ()).expect("Failed to set frequency");
 
-    println!("{}", SAMP_RATE);
+    println!("Setting sample rate to {}", SAMP_RATE);
     dev.set_sample_rate(Rx, channel, SAMP_RATE as f64).expect("Failed to set sample rate");
 
-    let mut stream = dev.rx_stream::<Complex<f32>>(&[channel]).unwrap();
-    let mut buf = vec![Complex::new(0.0, 0.0); stream.mtu().unwrap()];
+    println!("Starting stream...");
+    let mut stream = dev.rx_stream::<Complex<f32>>(&[channel]).expect("Failed to open RX stream");
+    println!("Calculating MTU...");
+    let mut mtu = stream.mtu().expect("Failed to get MTU");
+    println!("Original MTU size is {}", mtu);
+    mtu -= mtu % FFT_SIZE; // shorten MTU until it's a multiple of our FFT window
+    println!("Using an MTU of size {}", mtu);
+    let mut buf = vec![Complex::new(0.0, 0.0); mtu];
 
     //let mut outfile = BufWriter::new(File::create(fname).expect("error opening output file"));
 
-    stream.activate(None).expect("failed to activate stream");
-
-    while num_samples > 0 && !sb.caught() {
-        let read_size = min(num_samples as usize, buf.len());
-        let len = stream.read(&mut [&mut buf[..read_size]], 1_000_000).expect("error reading stream");
-        //write_complex_file(&buf[..len], &mut outfile).unwrap();
-        num_samples -= len
-    }
-
-    stream.deactivate(None).expect("failed to deactivate stream");
-
-    // TODO move fft into the loop above for continuous operation
-
-    // below this should move to a setup func
+    // this should move to a setup func or PSD struct or somethin
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(FFT_SIZE);
 
+    let mut outfile = File::create("fft-out").expect("cannot open output file");
+    let mut freq_outfile = File::create("fft-freq").expect("cannot open output file");
+
+    let mut fft_averages = vec!(NoSumSMA::<f32, f32, WINDOW_SIZE>::new(); FFT_SIZE);
+
+    stream.activate(None).expect("failed to activate stream");
+
+    //while num_samples > 0 && !sb.caught() {
+    let read_size = min(num_samples as usize, buf.len());
+    let len = stream.read(&mut [&mut buf[..read_size]], 1_000_000).expect("error reading stream");
+    //write_complex_file(&buf[..len], &mut outfile).unwrap();
+    //num_samples -= len;
+
     // TODO can also use an integer multiple of FFT_SIZE
-    // eg buf.len() % FFT_SIZE, then buf[remainder..] into the FFT
-    let sample_start_index = buf.len() - FFT_SIZE;
+    // eg len % FFT_SIZE, then buf[remainder..] into the FFT
+    let sample_start_index = len - FFT_SIZE;
     let mut fft_samp: [Complex<f32>; FFT_SIZE] = buf[sample_start_index..].try_into().unwrap();
 
+    // NOTE fft_samp is clobbered by the FFT
     let psd: Vec<f32> = calc_psd(fft, &mut fft_samp).expect("failed to calculate PSD");
-    // TODO figure out return from that func
 
-    // TODO plot psd vs freq_range and... it should work?
+    // write the PSD values
+    for elem in psd.iter() {
+        writeln!(outfile, "{} ", elem).expect("error writing");
+    }
 
     // set up our X axis (the frequency steps of the FFT)
     let mut freq_range: Vec<f32> = vec!(0.0; FFT_SIZE);
     for i in 0..FFT_SIZE {
         freq_range[i] = FREQ as f32 + (SAMP_RATE as f32/-2.0) + ((SAMP_RATE/FFT_SIZE) * i) as f32;
     }
-
-    // write the PSD values
-    let mut buffer = File::create("fft-out").expect("cannot open output file");
-    for elem in psd.iter() {
-        write!(buffer, "{} ", elem).expect("error writing");
-    }
     // write the fft's frequency steps to plot against
-    let mut freq_buffer = File::create("fft-freq").expect("cannot open output file");
     for elem in freq_range.iter() {
-        write!(freq_buffer, "{} ", elem).expect("error writing");
+        writeln!(freq_outfile, "{} ", elem).expect("error writing");
     }
 
-
-    let mut fft_averages = vec!(NoSumSMA::<f32, f32, WINDOW_SIZE>::new(); FFT_SIZE);
     // keep a running average of FFT values
     for (index, element) in psd.into_iter().enumerate() {
         fft_averages[index].add_sample(element);
     }
+    //} END LOOP
+
+    stream.deactivate(None).expect("failed to deactivate stream");
+
 }
 
+// TODO don't use io::Error here, I guess, probably
 fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<Vec<f32>> {
     // https://pysdr.org/content/sampling.html#calculating-power-spectral-density
 
