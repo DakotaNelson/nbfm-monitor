@@ -1,4 +1,5 @@
 use std::io;
+use std::f32::consts::PI;
 use std::io::Write;
 use std::fs::File;
 use std::cmp::min;
@@ -31,7 +32,7 @@ fn main() {
     //let fname = "testfile";
     // how many samples to capture before closing the stream
     //let mut num_samples = i64::MAX;
-    let mut num_samples = SAMP_RATE * 3; // sample for n seconds
+    let mut num_samples = SAMP_RATE * 1; // sample for n seconds
 
     let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
     let dev_args = match devs.len() {
@@ -138,7 +139,8 @@ fn calc_psd(fft: &Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE]) -> 
     // 2 - len/2 are positive frequencies, each step is samp_rate/len(fft)
     // https://www.gaussianwaves.com/2015/11/interpreting-fft-results-complex-dft-frequency-bins-and-fftshift/
 
-    // TODO windowing: https://pysdr.org/content/frequency_domain.html#windowing
+    // both of these modify samples in-place
+    hamming_window(samples).expect("failed to apply hamming window to samples");
     fft.process(samples);
 
     let mut psd: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
@@ -151,6 +153,18 @@ fn calc_psd(fft: &Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE]) -> 
     // psd now contains our completed PSD calculation
 
     Ok(psd)
+}
+
+fn hamming_window(samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<()> {
+    // https://math.stackexchange.com/questions/248849/hamming-window-understanding-formula
+    // TODO this really oughta be computed and cached inside a struct for the fft
+    let window: [f32; FFT_SIZE] = (0..FFT_SIZE).map(|n| 0.54 - 0.46 * ((2.0*PI*n as f32) / (FFT_SIZE as f32 - 1.0)).cos()).collect::<Vec<f32>>().try_into().expect("failed to compute hamming window");
+
+    for i in 0..FFT_SIZE {
+        samples[i] = samples[i].scale(window[i]);
+    }
+
+    Ok(())
 }
 
 // https://numpy.org/doc/stable/reference/generated/numpy.fft.fftshift.html
