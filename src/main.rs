@@ -3,6 +3,7 @@ use std::io::Write;
 use std::fs::File;
 use std::cmp::min;
 use std::process;
+use std::time::Instant;
 use num_complex::Complex;
 use std::sync::Arc;
 use soapysdr::Direction::Rx;
@@ -10,13 +11,17 @@ use rustfft::{FftPlanner, Fft};
 use rustfft::num_traits::Pow;
 use simple_moving_average::{SMA, NoSumSMA};
 
-// window of the running average
-const WINDOW_SIZE: usize = 10;
-// size of the fft
-const FFT_SIZE: usize = 2048;
 // sample rate of our SDR
-const SAMP_RATE: usize = 3_200_000;
-const FREQ: usize = 147_000_000;
+const SAMP_RATE: usize = 3_200_000; // 3.2 MHz
+const FREQ: usize = 147_000_000; // where to tune the SDR
+const FFT_SIZE: usize = 512;
+// divide into 6.25kHZ channels
+// NBFM is ~11 kHz signal so it'll get smeared but hopefully we'll be ok
+// ... unfortunately, the channel width is also "FFTs per second" if using the full sample set
+// (e.g. 10,000 FFT/s when using 10kHz channel width)
+
+// window of the running average
+const WINDOW_SIZE: usize = (SAMP_RATE / FFT_SIZE) * 5; // 5 seconds of averaging
 
 fn main() {
     println!("Starting nbfm-listener...");
@@ -25,7 +30,8 @@ fn main() {
     let channel = 0;
     //let fname = "testfile";
     // how many samples to capture before closing the stream
-    let mut num_samples = i64::MAX;
+    //let mut num_samples = i64::MAX;
+    let mut num_samples = SAMP_RATE * 3; // sample for n seconds
 
     let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
     let dev_args = match devs.len() {
@@ -56,11 +62,9 @@ fn main() {
 
     println!("Starting stream...");
     let mut stream = dev.rx_stream::<Complex<f32>>(&[channel]).expect("Failed to open RX stream");
-    println!("Calculating MTU...");
-    let mut mtu = stream.mtu().expect("Failed to get MTU");
-    println!("Original MTU size is {}", mtu);
-    mtu -= mtu % FFT_SIZE; // shorten MTU until it's a multiple of our FFT window
-    println!("Using an MTU of size {}", mtu);
+    println!("Fetching MTU...");
+    let mtu = stream.mtu().expect("Failed to get MTU");
+    // the buffer we read IQ data into from the SDR
     let mut buf = vec![Complex::new(0.0, 0.0); mtu];
 
     //let mut outfile = BufWriter::new(File::create(fname).expect("error opening output file"));
@@ -76,23 +80,41 @@ fn main() {
 
     stream.activate(None).expect("failed to activate stream");
 
-    //while num_samples > 0 && !sb.caught() {
-    let read_size = min(num_samples as usize, buf.len());
-    let len = stream.read(&mut [&mut buf[..read_size]], 1_000_000).expect("error reading stream");
-    //write_complex_file(&buf[..len], &mut outfile).unwrap();
-    //num_samples -= len;
+    while num_samples > 0 && !sb.caught() {
+        let read_size = min(num_samples as usize, buf.len());
+        let len = stream.read(&mut [&mut buf[..read_size]], 1_000_000).expect("error reading stream");
+        println!("Read {} bytes...", len);
+        num_samples -= len;
 
-    // TODO can also use an integer multiple of FFT_SIZE
-    // eg len % FFT_SIZE, then buf[remainder..] into the FFT
-    let sample_start_index = len - FFT_SIZE;
-    let mut fft_samp: [Complex<f32>; FFT_SIZE] = buf[sample_start_index..].try_into().unwrap();
+        // ignore some data so buf is a multiple of FFT_SIZE
+        let sample_start_index = len % FFT_SIZE;
 
-    // NOTE fft_samp is clobbered by the FFT
-    let psd: Vec<f32> = calc_psd(fft, &mut fft_samp).expect("failed to calculate PSD");
+        // how many FFTs do we need to consume all the samples
+        let fft_size_multiple = (len - sample_start_index) / FFT_SIZE;
+        print!("Computing {} FFTs...", fft_size_multiple);
+        let start = Instant::now();
+
+        let mut psd: [f32; FFT_SIZE];
+        for i in 0..fft_size_multiple {
+            let start = sample_start_index + (i * FFT_SIZE);
+            // NOTE "samples" is clobbered by the FFT (computed in-place)
+            let mut samples: [Complex<f32>; FFT_SIZE] = buf[start..start+FFT_SIZE].try_into().expect("incorrect sample length being passed to PSD function");
+            psd = calc_psd(&fft, &mut samples).expect("failed to calculate PSD");
+
+            // keep a running average of FFT values
+            for (index, element) in psd.into_iter().enumerate() {
+                fft_averages[index].add_sample(element);
+            }
+        }
+        let duration = start.elapsed();
+        println!(" in {:?}", duration);
+    }
+
+    stream.deactivate(None).expect("failed to deactivate stream");
 
     // write the PSD values
-    for elem in psd.iter() {
-        writeln!(outfile, "{} ", elem).expect("error writing");
+    for elem in fft_averages.iter() {
+        writeln!(outfile, "{} ", elem.get_average()).expect("error writing");
     }
 
     // set up our X axis (the frequency steps of the FFT)
@@ -100,23 +122,15 @@ fn main() {
     for i in 0..FFT_SIZE {
         freq_range[i] = FREQ as f32 + (SAMP_RATE as f32/-2.0) + ((SAMP_RATE/FFT_SIZE) * i) as f32;
     }
+
     // write the fft's frequency steps to plot against
     for elem in freq_range.iter() {
         writeln!(freq_outfile, "{} ", elem).expect("error writing");
     }
-
-    // keep a running average of FFT values
-    for (index, element) in psd.into_iter().enumerate() {
-        fft_averages[index].add_sample(element);
-    }
-    //} END LOOP
-
-    stream.deactivate(None).expect("failed to deactivate stream");
-
 }
 
 // TODO don't use io::Error here, I guess, probably
-fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<Vec<f32>> {
+fn calc_psd(fft: &Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<[f32; FFT_SIZE]> {
     // https://pysdr.org/content/sampling.html#calculating-power-spectral-density
 
     // fft[0] -> DC
@@ -124,18 +138,16 @@ fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE]) -> i
     // 2 - len/2 are positive frequencies, each step is samp_rate/len(fft)
     // https://www.gaussianwaves.com/2015/11/interpreting-fft-results-complex-dft-frequency-bins-and-fftshift/
 
-    // TODO optimize using process_with_scratch()
+    // TODO windowing: https://pysdr.org/content/frequency_domain.html#windowing
     fft.process(samples);
 
-    let fftbuf: Vec<f32> = samples.iter().map(|val| {
-        val.norm().pow(2) / (FFT_SIZE * SAMP_RATE) as f32
-    }).collect();
+    let mut psd: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
+    for i in 0..FFT_SIZE {
+        let sample: f32 = samples[i].norm().pow(2) / (FFT_SIZE * SAMP_RATE) as f32;
+        psd[i] = sample.log10();
+    }
 
-    let mut psd: Vec<f32> = fftbuf.iter().map(|val| {
-        val.log10()
-    }).collect();
-
-    fftshift(&mut psd);
+    fftshift(&mut psd.to_vec());
     // psd now contains our completed PSD calculation
 
     Ok(psd)
@@ -154,21 +166,6 @@ fn fftshift(fftbuf: &mut Vec<f32>) {
         fftbuf.insert(0, elem);
     }
 }
-
-// fn write_scalar_file<W: Write>(src_buf: &[f32], mut dest_file: W) -> io::Result<()> {
-//     for sample in src_buf {
-//         dest_file.write_f32::<LittleEndian>(*sample)?;
-//     }
-//     Ok(())
-// }
-//
-// fn write_complex_file<W: Write>(src_buf: &[Complex<f32>], mut dest_file: W) -> io::Result<()> {
-//     for sample in src_buf {
-//         dest_file.write_f32::<BigEndian>(sample.re)?;
-//         dest_file.write_f32::<LittleEndian>(sample.im)?;
-//     }
-//     Ok(())
-// }
 
 #[cfg(test)]
 mod tests {
