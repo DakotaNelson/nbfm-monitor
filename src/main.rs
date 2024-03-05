@@ -1,3 +1,4 @@
+use std::io;
 use std::io::Write;
 use std::fs::File;
 use std::cmp::min;
@@ -75,18 +76,42 @@ fn main() {
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(FFT_SIZE);
 
-    let mut fft_averages = vec!(NoSumSMA::<f32, f32, WINDOW_SIZE>::new(); FFT_SIZE);
-
     // TODO can also use an integer multiple of FFT_SIZE
     // eg buf.len() % FFT_SIZE, then buf[remainder..] into the FFT
     let sample_start_index = buf.len() - FFT_SIZE;
     let mut fft_samp: [Complex<f32>; FFT_SIZE] = buf[sample_start_index..].try_into().unwrap();
 
-    calc_psd(fft, &mut fft_samp, &mut fft_averages);
+    let psd: Vec<f32> = calc_psd(fft, &mut fft_samp).expect("failed to calculate PSD");
     // TODO figure out return from that func
+
+    // TODO plot psd vs freq_range and... it should work?
+
+    // set up our X axis (the frequency steps of the FFT)
+    let mut freq_range: Vec<f32> = vec!(0.0; FFT_SIZE);
+    for i in 0..FFT_SIZE {
+        freq_range[i] = FREQ as f32 + (SAMP_RATE as f32/-2.0) + ((SAMP_RATE/FFT_SIZE) * i) as f32;
+    }
+
+    // write the PSD values
+    let mut buffer = File::create("fft-out").expect("cannot open output file");
+    for elem in psd.iter() {
+        write!(buffer, "{} ", elem).expect("error writing");
+    }
+    // write the fft's frequency steps to plot against
+    let mut freq_buffer = File::create("fft-freq").expect("cannot open output file");
+    for elem in freq_range.iter() {
+        write!(freq_buffer, "{} ", elem).expect("error writing");
+    }
+
+
+    let mut fft_averages = vec!(NoSumSMA::<f32, f32, WINDOW_SIZE>::new(); FFT_SIZE);
+    // keep a running average of FFT values
+    for (index, element) in psd.into_iter().enumerate() {
+        fft_averages[index].add_sample(element);
+    }
 }
 
-fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE], fft_averages: &mut Vec<NoSumSMA::<f32, f32, WINDOW_SIZE>>) {
+fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<Vec<f32>> {
     // https://pysdr.org/content/sampling.html#calculating-power-spectral-density
 
     // fft[0] -> DC
@@ -107,26 +132,8 @@ fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE], fft_
 
     fftshift(&mut psd);
     // psd now contains our completed PSD calculation
-    // next, set up our X axis (the frequency steps of the FFT)
-    let mut freq_range: Vec<f32> = vec!(0.0; FFT_SIZE);
-    for i in 0..FFT_SIZE {
-        freq_range[i] = FREQ as f32 + (SAMP_RATE as f32/-2.0) + ((SAMP_RATE/FFT_SIZE) * i) as f32;
-    }
-    // TODO plot psd vs freq_range and... it should work?
 
-    let mut buffer = File::create("fft-out").expect("cannot open output file");
-    for elem in samples.iter() {
-        write!(buffer, "{} ", elem).expect("error writing");
-    }
-    let mut freq_buffer = File::create("fft-freq").expect("cannot open output file");
-    for elem in freq_range.iter() {
-        write!(freq_buffer, "{} ", elem).expect("error writing");
-    }
-
-    // keep a running average of FFT values
-    for (index, element) in psd.into_iter().enumerate() {
-        fft_averages[index].add_sample(element);
-    }
+    Ok(psd)
 }
 
 // https://numpy.org/doc/stable/reference/generated/numpy.fft.fftshift.html
@@ -141,8 +148,6 @@ fn fftshift(fftbuf: &mut Vec<f32>) {
     for elem in neg_freqs.into_iter().rev() {
         fftbuf.insert(0, elem);
     }
-
-    // TODO holy crap write tests for this
 }
 
 // fn write_scalar_file<W: Write>(src_buf: &[f32], mut dest_file: W) -> io::Result<()> {
@@ -159,3 +164,20 @@ fn fftshift(fftbuf: &mut Vec<f32>) {
 //     }
 //     Ok(())
 // }
+
+#[cfg(test)]
+mod tests {
+    use crate::fftshift;
+    #[test]
+    fn runs_at_all() {
+        assert_eq!(1,1);
+    }
+
+    #[test]
+    fn fftshift_works() {
+        let mut startbuf: Vec<f32> = vec![0.0, 1.0, 2.0, 3.0, -4.0, -3.0, -2.0, -1.0];
+        fftshift(&mut startbuf);
+        let endbuf: Vec<f32> = vec![-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
+        assert_eq!(startbuf, endbuf);
+    }
+}
