@@ -1,9 +1,7 @@
-//use std::fs::File;
-use std::io::{self, Write};
+use std::io::Write;
+use std::fs::File;
 use std::cmp::min;
 use std::process;
-use std::i64;
-use byteorder::{LittleEndian, WriteBytesExt};
 use num_complex::Complex;
 use std::sync::Arc;
 use soapysdr::Direction::Rx;
@@ -17,7 +15,7 @@ const WINDOW_SIZE: usize = 10;
 const FFT_SIZE: usize = 2048;
 // sample rate of our SDR
 const SAMP_RATE: usize = 3_200_000;
-const FREQ: usize = 144_000_000;
+const FREQ: usize = 147_000_000;
 
 fn main() {
     println!("Starting nbfm-listener...");
@@ -25,7 +23,8 @@ fn main() {
     let dev_filter = "driver=rtlsdr";
     let channel = 0;
     //let fname = "testfile";
-    let mut num_samples = i64::MAX;
+    // how many samples to capture before closing the stream
+    let mut num_samples = FFT_SIZE + 1;//i64::MAX;
 
     let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
     let dev_args = match devs.len() {
@@ -65,8 +64,10 @@ fn main() {
         let read_size = min(num_samples as usize, buf.len());
         let len = stream.read(&mut [&mut buf[..read_size]], 1_000_000).expect("error reading stream");
         //write_complex_file(&buf[..len], &mut outfile).unwrap();
-        num_samples -= len as i64
+        num_samples -= len
     }
+
+    stream.deactivate(None).expect("failed to deactivate stream");
 
     // TODO move fft into the loop above for continuous operation
 
@@ -77,14 +78,12 @@ fn main() {
     let mut fft_averages = vec!(NoSumSMA::<f32, f32, WINDOW_SIZE>::new(); FFT_SIZE);
 
     // TODO can also use an integer multiple of FFT_SIZE
+    // eg buf.len() % FFT_SIZE, then buf[remainder..] into the FFT
     let sample_start_index = buf.len() - FFT_SIZE;
     let mut fft_samp: [Complex<f32>; FFT_SIZE] = buf[sample_start_index..].try_into().unwrap();
+
     calc_psd(fft, &mut fft_samp, &mut fft_averages);
-
-    // let mut fftoutfile = BufWriter::new(File::create("fft-output").expect("error opening output file"));
-    // write_scalar_file(&fftbuf, &mut fftoutfile).expect("failed to write fft output");
-
-    stream.deactivate(None).expect("failed to deactivate stream");
+    // TODO figure out return from that func
 }
 
 fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE], fft_averages: &mut Vec<NoSumSMA::<f32, f32, WINDOW_SIZE>>) {
@@ -99,7 +98,7 @@ fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE], fft_
     fft.process(samples);
 
     let fftbuf: Vec<f32> = samples.iter().map(|val| {
-        val.norm().pow(2) / (FFT_SIZE as f32 * SAMP_RATE as f32)
+        val.norm().pow(2) / (FFT_SIZE * SAMP_RATE) as f32
     }).collect();
 
     let mut psd: Vec<f32> = fftbuf.iter().map(|val| {
@@ -107,19 +106,24 @@ fn calc_psd(fft: Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE], fft_
     }).collect();
 
     fftshift(&mut psd);
+    // psd now contains our completed PSD calculation
+    // next, set up our X axis (the frequency steps of the FFT)
     let mut freq_range: Vec<f32> = vec!(0.0; FFT_SIZE);
     for i in 0..FFT_SIZE {
         freq_range[i] = FREQ as f32 + (SAMP_RATE as f32/-2.0) + ((SAMP_RATE/FFT_SIZE) * i) as f32;
     }
-    //println!("{:?}", freq_range);
+    // TODO plot psd vs freq_range and... it should work?
 
-    // plot psd vs freq_range and... it should work?
+    let mut buffer = File::create("fft-out").expect("cannot open output file");
+    for elem in samples.iter() {
+        write!(buffer, "{} ", elem).expect("error writing");
+    }
+    let mut freq_buffer = File::create("fft-freq").expect("cannot open output file");
+    for elem in freq_range.iter() {
+        write!(freq_buffer, "{} ", elem).expect("error writing");
+    }
 
     // keep a running average of FFT values
-
-    println!("{}", psd.len());
-    println!("{}", fft_averages.len());
-
     for (index, element) in psd.into_iter().enumerate() {
         fft_averages[index].add_sample(element);
     }
@@ -141,17 +145,17 @@ fn fftshift(fftbuf: &mut Vec<f32>) {
     // TODO holy crap write tests for this
 }
 
-fn write_scalar_file<W: Write>(src_buf: &[f32], mut dest_file: W) -> io::Result<()> {
-    for sample in src_buf {
-        dest_file.write_f32::<LittleEndian>(*sample)?;
-    }
-    Ok(())
-}
-
-fn write_complex_file<W: Write>(src_buf: &[Complex<f32>], mut dest_file: W) -> io::Result<()> {
-    for sample in src_buf {
-        dest_file.write_f32::<LittleEndian>(sample.re)?;
-        dest_file.write_f32::<LittleEndian>(sample.im)?;
-    }
-    Ok(())
-}
+// fn write_scalar_file<W: Write>(src_buf: &[f32], mut dest_file: W) -> io::Result<()> {
+//     for sample in src_buf {
+//         dest_file.write_f32::<LittleEndian>(*sample)?;
+//     }
+//     Ok(())
+// }
+//
+// fn write_complex_file<W: Write>(src_buf: &[Complex<f32>], mut dest_file: W) -> io::Result<()> {
+//     for sample in src_buf {
+//         dest_file.write_f32::<BigEndian>(sample.re)?;
+//         dest_file.write_f32::<LittleEndian>(sample.im)?;
+//     }
+//     Ok(())
+// }
