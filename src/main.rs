@@ -22,7 +22,9 @@ const FFT_SIZE: usize = 512;
 // (e.g. 10,000 FFT/s when using 10kHz channel width)
 
 // window of the running average
-const WINDOW_SIZE: usize = (SAMP_RATE / FFT_SIZE) * 5; // 5 seconds of averaging
+const WINDOW_SIZE: usize = (SAMP_RATE / FFT_SIZE) * 5; // 10 seconds of averaging
+                                                       // (only compute every *other* FFT right
+                                                       // now)
 
 fn main() {
     println!("Starting nbfm-listener...");
@@ -32,7 +34,7 @@ fn main() {
     //let fname = "testfile";
     // how many samples to capture before closing the stream
     //let mut num_samples = i64::MAX;
-    let mut num_samples = SAMP_RATE * 1; // sample for n seconds
+    let mut num_samples = SAMP_RATE * 5; // sample for n seconds
 
     let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
     let dev_args = match devs.len() {
@@ -92,11 +94,14 @@ fn main() {
 
         // how many FFTs do we need to consume all the samples
         let fft_size_multiple = (len - sample_start_index) / FFT_SIZE;
-        print!("Computing {} FFTs...", fft_size_multiple);
+        print!("Computing {} FFTs...", fft_size_multiple / 2);
         let start = Instant::now();
 
         let mut psd: [f32; FFT_SIZE];
         for i in 0..fft_size_multiple {
+            if i % 2 == 0 {
+                continue; // only use every other set of samples, for speed
+            }
             let start = sample_start_index + (i * FFT_SIZE);
             // NOTE "samples" is clobbered by the FFT (computed in-place)
             let mut samples: [Complex<f32>; FFT_SIZE] = buf[start..start+FFT_SIZE].try_into().expect("incorrect sample length being passed to PSD function");
@@ -146,7 +151,7 @@ fn calc_psd(fft: &Arc<dyn Fft<f32>>, samples: &mut [Complex<f32>; FFT_SIZE]) -> 
     let mut psd: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
     for i in 0..FFT_SIZE {
         let sample: f32 = samples[i].norm().pow(2) / (FFT_SIZE * SAMP_RATE) as f32;
-        psd[i] = sample.log10();
+        psd[i] = 10.0 * sample.log10(); // convert to dB
     }
 
     fftshift(&mut psd.to_vec());
