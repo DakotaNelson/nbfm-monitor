@@ -9,29 +9,34 @@ use std::io;
 // keeps a running average of the power spectral density of a frequency range
 pub struct AveragePsd<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> {
     samp_rate: usize,
-    CENTER_FREQ: usize,
-    //FFT_SIZE: usize,
-    //AVG_WINDOW_SIZE: usize,
+    center_freq: usize,
     fft: Arc<dyn Fft<f32>>,
-    pub fft_averages: Vec<NoSumSMA::<f32, f32, {AVG_WINDOW_SIZE}>>,
-    // TODO write a getter for this
+    psd_averages: Vec<NoSumSMA::<f32, f32, AVG_WINDOW_SIZE>>,
 }
 
 impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_SIZE, FFT_SIZE> {
-    pub fn new(samp_rate: usize, CENTER_FREQ: usize) -> AveragePsd<AVG_WINDOW_SIZE, FFT_SIZE> {
+    pub fn new(samp_rate: usize, center_freq: usize) -> AveragePsd<AVG_WINDOW_SIZE, FFT_SIZE> {
         let fft = FftPlanner::new().plan_fft_forward(FFT_SIZE);
-        let fft_averages = vec!(NoSumSMA::<f32, f32, { AVG_WINDOW_SIZE }>::new(); FFT_SIZE);
+        let psd_averages = vec!(NoSumSMA::<f32, f32, AVG_WINDOW_SIZE>::new(); FFT_SIZE);
 
-        AveragePsd{samp_rate, CENTER_FREQ,
-                   fft, fft_averages}
+        AveragePsd{samp_rate, center_freq, fft, psd_averages}
     }
 
     pub fn update(&mut self, samples: &mut [Complex<f32>; FFT_SIZE]) {
         let psd = self.calc_psd(samples).expect("unable to calculate PSD");
         // keep a running average of PSD values
         for (index, element) in psd.into_iter().enumerate() {
-            self.fft_averages[index].add_sample(element);
+            self.psd_averages[index].add_sample(element);
         }
+    }
+
+    pub fn get_psd(&self) -> [f32; FFT_SIZE] {
+        let mut avg_psd: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
+        for (index, element) in self.psd_averages.iter().enumerate() {
+            avg_psd[index] = element.get_average();
+        }
+
+        return avg_psd;
     }
 
     // TODO don't use io::Error here, I guess, probably
@@ -92,7 +97,7 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
         let mut i = 0;
 
         while i < FFT_SIZE {
-            freq_range[i] = self.CENTER_FREQ as f32 + (self.samp_rate as f32/-2.0) + ((self.samp_rate/FFT_SIZE) * i) as f32;
+            freq_range[i] = self.center_freq as f32 + (self.samp_rate as f32/-2.0) + ((self.samp_rate/FFT_SIZE) * i) as f32;
             i += 1;
         }
 

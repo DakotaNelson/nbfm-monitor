@@ -21,8 +21,8 @@ const FFT_SIZE: usize = 512;
 
 // window of the running average
 const AVG_WINDOW_SIZE: usize = (SAMP_RATE / FFT_SIZE) * 5; // 10 seconds of averaging
-                                                       // (only compute every *other* FFT right
-                                                       // now)
+                                                       // (only compute every *other*
+                                                       // FFT right now)
 
 fn main() {
     let dev_filter = "driver=rtlsdr";
@@ -68,9 +68,6 @@ fn main() {
 
     // this should move to a setup func or PSD struct or somethin
 
-    let mut outfile = File::create("fft-out").expect("cannot open output file");
-    let mut freq_outfile = File::create("fft-freq").expect("cannot open output file");
-
     let mut average_psd: AveragePsd<AVG_WINDOW_SIZE, FFT_SIZE> = AveragePsd::<AVG_WINDOW_SIZE, FFT_SIZE>::new(SAMP_RATE, CENTER_FREQ);
 
     stream.activate(None).expect("failed to activate stream");
@@ -106,16 +103,17 @@ fn main() {
 
     stream.deactivate(None).expect("failed to deactivate stream");
 
-    // write the PSD values
-    // TODO write a getter
-    // for elem in average_psd.fft_averages.iter() {
-    //     writeln!(outfile, "{} ", elem.get_average()).expect("error writing");
-    // }
+    // write out results
+    let mut outfile = File::create("fft-out").expect("cannot open output file");
+    let mut freq_outfile = File::create("fft-freq").expect("cannot open output file");
 
+    // write the PSD values
+    for elem in average_psd.get_psd().iter() {
+        writeln!(outfile, "{} ", elem).expect("error writing");
+    }
 
     // write the fft's frequency steps to plot against
-    let freq_range = average_psd.get_freq_range();
-    for elem in freq_range.iter() {
+    for elem in average_psd.get_freq_range().iter() {
         writeln!(freq_outfile, "{} ", elem).expect("error writing");
     }
 }
