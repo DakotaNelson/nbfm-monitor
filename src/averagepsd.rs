@@ -68,7 +68,14 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
         // https://math.stackexchange.com/questions/248849/hamming-window-understanding-formula
         // TODO this really oughta be computed and cached inside a struct for the fft
         // TODO - write the window as a const fn or something
-        let window: [f32; FFT_SIZE] = (0..FFT_SIZE).map(|n| 0.54 - 0.46 * ((2.0*PI*n as f32) / (FFT_SIZE as f32 - 1.0)).cos()).collect::<Vec<f32>>().try_into().expect("failed to compute hamming window");
+        let mut window: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
+        for n in 0..FFT_SIZE {
+            let numerator = 2.0 * PI * (n as f32);
+            window[n] = 0.53836 - 0.46164 * (numerator / (FFT_SIZE as f32 - 1.0)).cos();
+        }
+
+        // hamming formula is:
+        // x = 0.53836 + 0.46164*cos( (2*pi*n) / (N - 1)) where N is fft_len
 
         for i in 0..FFT_SIZE {
             samples[i] = samples[i].scale(window[i]);
@@ -109,6 +116,7 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
 #[cfg(test)]
 mod tests {
     use crate::AveragePsd;
+    use num_complex::Complex;
 
     #[test]
     fn fftshift_works() {
@@ -118,4 +126,20 @@ mod tests {
         let endbuf: Vec<f32> = vec![-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
         assert_eq!(startbuf, endbuf);
     }
+
+    #[test]
+    fn hamming_window_correct() {
+        // avg window of 10, FFT size of 8
+        const FFT_SIZE: usize = 8;
+        let psd = AveragePsd::<10, FFT_SIZE>::new(1, 1);
+
+        let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(1.0, 1.0); FFT_SIZE];
+        psd.hamming_window(&mut samples).expect("failed to apply hamming window");
+
+        let expected: [Complex<f32>; FFT_SIZE] = [Complex { re: 0.07672, im: 0.07672 }, Complex { re: 0.25053218, im: 0.25053218 }, Complex { re: 0.64108455, im: 0.64108455 }, Complex { re: 0.95428324, im: 0.95428324 }, Complex { re: 0.95428324, im: 0.95428324 }, Complex { re: 0.6410844, im: 0.6410844 }, Complex { re: 0.2505322, im: 0.2505322 }, Complex { re: 0.07672, im: 0.07672 }];
+
+        assert_eq!(samples, expected);
+    }
+
+    // TODO test the FFT with a pure sine wave
 }

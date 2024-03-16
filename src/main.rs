@@ -78,6 +78,7 @@ fn main() {
         println!("Read {} bytes...", len);
         num_samples -= len;
 
+        // TODO consider moving this into the struct
         // ignore some data so buf is a multiple of FFT_SIZE
         let sample_start_index = len % FFT_SIZE;
 
@@ -97,6 +98,7 @@ fn main() {
             average_psd.update(&mut samples)
 
         }
+        // TODO set up the actual "find n highest peaks" functionality
         let duration = start.elapsed();
         println!(" in {:?}", duration);
     }
