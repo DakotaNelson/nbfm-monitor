@@ -58,7 +58,7 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
             psd[i] = 10.0 * sample.log10(); // convert to dB
         }
 
-        Self::fftshift(&mut psd.to_vec());
+        Self::fftshift(&mut psd);
         // psd now contains our completed PSD calculation
 
         Ok(psd)
@@ -85,18 +85,12 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
     }
 
     // https://numpy.org/doc/stable/reference/generated/numpy.fft.fftshift.html
-    fn fftshift(fftbuf: &mut Vec<f32>) {
-        let buflen: usize = fftbuf.len();
-        assert!(buflen%2 == 0, "fftshift can only handle ffts with even length");
-        // TODO handle odd-length ffts, I guess, if I have to
-        // or at least make this a better error
+    fn fftshift(fftbuf: &mut [f32; FFT_SIZE]) {
 
-        // take the back half of the array, reverse it, and put it on the front
-        let neg_freqs = fftbuf.split_off(buflen/2);
-
-        for elem in neg_freqs.into_iter().rev() {
-            fftbuf.insert(0, elem);
-        }
+        // In Octave:
+        // horzcat(f_ham(ceil((buflen-1)/2):-1:1), 0, f_ham(1:floor((buflen-1)/2)));
+        let cutoff_point = ((FFT_SIZE-1) as f32)/2.0;
+        fftbuf.rotate_left(cutoff_point.ceil() as usize);
     }
 
     pub fn get_freq_range(&self) -> [f32; FFT_SIZE] {
@@ -127,10 +121,10 @@ mod tests {
 
     #[test]
     fn fftshift_works() {
-        let mut startbuf: Vec<f32> = vec![0.0, 1.0, 2.0, 3.0, -4.0, -3.0, -2.0, -1.0];
+        let mut startbuf: [f32; 8] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
         // avg window of 10, FFT size of 8
         AveragePsd::<10, 8>::fftshift(&mut startbuf);
-        let endbuf: Vec<f32> = vec![-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
+        let endbuf: [f32; 8] = [4.0, 5.0, 6.0, 7.0, 0.0, 1.0, 2.0, 3.0];
         assert_eq!(startbuf, endbuf);
     }
 
