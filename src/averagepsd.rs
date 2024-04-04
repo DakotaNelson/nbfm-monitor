@@ -45,7 +45,7 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
 
         // fft[0] -> DC
         // fft[len/2 + 1] -> nyquist f
-        // 2 - len/2 are positive frequencies, each step is samp_rate/len(fft)
+        // fft[1] to fft[len/2] are positive frequencies, step is samp_rate/len(fft)
         // https://www.gaussianwaves.com/2015/11/interpreting-fft-results-complex-dft-frequency-bins-and-fftshift/
 
         // both of these modify samples in-place
@@ -88,7 +88,8 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
     fn fftshift(fftbuf: &mut Vec<f32>) {
         let buflen: usize = fftbuf.len();
         assert!(buflen%2 == 0, "fftshift can only handle ffts with even length");
-        // todo handle odd-length ffts, I guess, if I have to
+        // TODO handle odd-length ffts, I guess, if I have to
+        // or at least make this a better error
 
         // take the back half of the array, reverse it, and put it on the front
         let neg_freqs = fftbuf.split_off(buflen/2);
@@ -103,8 +104,10 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
         let mut freq_range: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
         let mut i = 0;
 
+        let start_f: f32 = (self.samp_rate as f32 / -2.0) + self.center_freq as f32;
+        let delta_f: f32 = self.samp_rate as f32 / FFT_SIZE as f32;
         while i < FFT_SIZE {
-            freq_range[i] = self.center_freq as f32 + (self.samp_rate as f32/-2.0) + ((self.samp_rate/FFT_SIZE) * i) as f32;
+            freq_range[i] = start_f + (delta_f * i as f32);
             i += 1;
         }
 
@@ -117,6 +120,10 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
 mod tests {
     use crate::AveragePsd;
     use num_complex::Complex;
+    use core::f32::consts::{PI, E};
+
+    use std::io::Write;
+    use std::fs::File;
 
     #[test]
     fn fftshift_works() {
@@ -141,5 +148,85 @@ mod tests {
         assert_eq!(samples, expected);
     }
 
+    #[test]
+    fn all_zero_psd() {
+        // pass all-zero samples into the code and get -inf decibels out
+        // avg window of 10, FFT size of 8
+        const FFT_SIZE: usize = 8;
+        let psd = AveragePsd::<10, FFT_SIZE>::new(1, 1);
+
+        let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(0.0, 0.0); FFT_SIZE];
+
+        let output = psd.calc_psd(&mut samples).expect("failed to calculate PSD");
+        println!("{:?}", output);
+
+        for elem in output.iter() {
+            // log10(0) is -inf so -inf dB is correct, I think
+            assert_eq!(*elem, std::f32::NEG_INFINITY);
+        }
+    }
+
+    #[test]
+    fn all_one_psd() {
+        // pass all-one samples into the code and get TODO
+        // avg window of 10, FFT size of 8
+        const FFT_SIZE: usize = 8;
+        let psd = AveragePsd::<10, FFT_SIZE>::new(1, 1);
+
+        let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(1.0, 1.0); FFT_SIZE];
+
+        let output = psd.calc_psd(&mut samples).expect("failed to calculate PSD");
+        println!("{:?}", output);
+
+        for elem in output.iter() {
+            assert_eq!(*elem, std::f32::NEG_INFINITY);
+        }
+    }
+
     // TODO test the FFT with a pure sine wave
+    #[test]
+    fn psd_of_sine_wave() {
+        const FFT_SIZE: usize = 256;
+
+        let samp_rate: usize = 256; // in Hz
+        //let samp_period: f32 = 1.0 / samp_rate as f32;
+        let center_freq: usize = 0;
+
+        let mut psd = AveragePsd::<1, FFT_SIZE>::new(samp_rate, center_freq);
+
+        // 50 Hz sine wave
+        let j = Complex::i();
+        let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(0.0, 0.0); FFT_SIZE];
+        for i in 0..samples.len() {
+            let im: Complex<f32> = j * 2.0 * PI * 50.0 * (i as f32);
+            // e^(i*theta) = cos(theta) + i*sin(theta)
+            samples[i] = im.expf(E);
+        }
+
+        psd.update(&mut samples);
+
+        panic!();
+        // write out results
+        let mut original_waveform_file = File::create("waveform-out-TEST").expect("cannot open output file");
+        let mut outfile = File::create("fft-out-TEST").expect("cannot open output file");
+        let mut freq_outfile = File::create("fft-freq-TEST").expect("cannot open output file");
+
+        // write the original waveform
+        for elem in samples.iter() {
+            writeln!(original_waveform_file, "{} ", elem).expect("error writing");
+        }
+
+
+        // write the PSD values
+        for elem in psd.get_psd().iter() {
+            writeln!(outfile, "{} ", elem).expect("error writing");
+        }
+
+        // write the fft's frequency steps to plot against
+        for elem in psd.get_freq_range().iter() {
+            writeln!(freq_outfile, "{} ", elem).expect("error writing");
+        }
+    }
+
+    // TODO test get_freq_range()
 }

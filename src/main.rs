@@ -95,7 +95,7 @@ fn main() {
             let start = sample_start_index + (i * FFT_SIZE);
             // NOTE "samples" is clobbered by the FFT (computed in-place)
             let mut samples: [Complex<f32>; FFT_SIZE] = buf[start..start+FFT_SIZE].try_into().expect("incorrect sample length being passed to PSD function");
-            average_psd.update(&mut samples)
+            average_psd.update(&mut samples);
 
         }
         // TODO set up the actual "find n highest peaks" functionality
