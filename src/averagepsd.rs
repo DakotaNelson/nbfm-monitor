@@ -87,6 +87,10 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
     // https://numpy.org/doc/stable/reference/generated/numpy.fft.fftshift.html
     fn fftshift(fftbuf: &mut [f32; FFT_SIZE]) {
 
+        // only works for even-length FFTs right now
+        // TODO return better error, compile time check, or fix for odd len
+        assert_eq!(FFT_SIZE % 2, 0);
+
         // In Octave:
         // horzcat(f_ham(ceil((buflen-1)/2):-1:1), 0, f_ham(1:floor((buflen-1)/2)));
         let cutoff_point = ((FFT_SIZE-1) as f32)/2.0;
@@ -120,11 +124,23 @@ mod tests {
     use std::fs::File;
 
     #[test]
-    fn fftshift_works() {
+    fn fftshift_even_len() {
         let mut startbuf: [f32; 8] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
-        // avg window of 10, FFT size of 8
-        AveragePsd::<10, 8>::fftshift(&mut startbuf);
+        // avg window of 1, FFT size of 8
+        AveragePsd::<1, 8>::fftshift(&mut startbuf);
         let endbuf: [f32; 8] = [4.0, 5.0, 6.0, 7.0, 0.0, 1.0, 2.0, 3.0];
+        assert_eq!(startbuf, endbuf);
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion `left == right` failed")]
+    fn fftshift_odd_len() {
+        let mut startbuf: [f32; 7] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // avg window of 1, FFT size of 8
+        AveragePsd::<1, 7>::fftshift(&mut startbuf);
+        // should panic on the line above due to an assert() in fftshift
+        let endbuf: [f32; 7] = [4.0, 5.0, 6.0, 0.0, 1.0, 2.0, 3.0];
+        // this is not great but for now it'll work
         assert_eq!(startbuf, endbuf);
     }
 
