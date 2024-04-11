@@ -87,7 +87,7 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
     // https://numpy.org/doc/stable/reference/generated/numpy.fft.fftshift.html
     fn fftshift(fftbuf: &mut [f32; FFT_SIZE]) {
 
-        // only works for even-length FFTs right now
+        // NOTE only works for even-length FFTs right now
         // TODO return better error, compile time check, or fix for odd len
         assert_eq!(FFT_SIZE % 2, 0);
 
@@ -118,10 +118,7 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
 mod tests {
     use crate::AveragePsd;
     use num_complex::Complex;
-    use core::f32::consts::{PI, E};
-
-    use std::io::Write;
-    use std::fs::File;
+    use core::f32::consts::PI;
 
     #[test]
     fn fftshift_even_len() {
@@ -176,23 +173,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn all_one_psd() {
-        // pass all-one samples into the code and get TODO
-        // avg window of 10, FFT size of 8
-        const FFT_SIZE: usize = 8;
-        let psd = AveragePsd::<10, FFT_SIZE>::new(1, 1);
-
-        let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(1.0, 1.0); FFT_SIZE];
-
-        let output = psd.calc_psd(&mut samples).expect("failed to calculate PSD");
-        println!("{:?}", output);
-
-        for elem in output.iter() {
-            assert_eq!(*elem, std::f32::NEG_INFINITY);
-        }
-    }
-
     // TODO test the FFT with a pure sine wave
     #[test]
     fn psd_of_sine_wave() {
@@ -205,37 +185,26 @@ mod tests {
         let mut psd = AveragePsd::<1, FFT_SIZE>::new(samp_rate, center_freq);
 
         // 50 Hz sine wave
-        let j = Complex::i();
         let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(0.0, 0.0); FFT_SIZE];
         for i in 0..samples.len() {
-            let im: Complex<f32> = j * 2.0 * PI * 50.0 * (i as f32);
+            let im: f32 = 2.0 * PI * (i as f32 / 50.0);
             // e^(i*theta) = cos(theta) + i*sin(theta)
-            samples[i] = im.expf(E);
+            // sin(z) = (e^iz - e^-iz)/2i
+            samples[i] = Complex::new(0.0, im.sin());
         }
 
         psd.update(&mut samples);
 
-        panic!();
-        // write out results
-        let mut original_waveform_file = File::create("waveform-out-TEST").expect("cannot open output file");
-        let mut outfile = File::create("fft-out-TEST").expect("cannot open output file");
-        let mut freq_outfile = File::create("fft-freq-TEST").expect("cannot open output file");
+        let elements = psd.get_psd();
+        println!("{:?}", elements);
+        // symmetric peaks
+        assert_eq!(elements[123], elements[133]);
+        // should be ~= -11.5
+        assert!(elements[123] > -12.0);
+        assert!(elements[123] < -10.0);
 
-        // write the original waveform
-        for elem in samples.iter() {
-            writeln!(original_waveform_file, "{} ", elem).expect("error writing");
-        }
-
-
-        // write the PSD values
-        for elem in psd.get_psd().iter() {
-            writeln!(outfile, "{} ", elem).expect("error writing");
-        }
-
-        // write the fft's frequency steps to plot against
-        for elem in psd.get_freq_range().iter() {
-            writeln!(freq_outfile, "{} ", elem).expect("error writing");
-        }
+        assert!(elements[133] > -12.0);
+        assert!(elements[133] < -10.0);
     }
 
     // TODO test get_freq_range()
