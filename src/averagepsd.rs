@@ -179,12 +179,11 @@ mod tests {
         const FFT_SIZE: usize = 256;
 
         let samp_rate: usize = 256; // in Hz
-        //let samp_period: f32 = 1.0 / samp_rate as f32;
         let center_freq: usize = 0;
 
         let mut psd = AveragePsd::<1, FFT_SIZE>::new(samp_rate, center_freq);
 
-        // 50 Hz sine wave
+        // sine wave @ one cycle/50 samples
         let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(0.0, 0.0); FFT_SIZE];
         for i in 0..samples.len() {
             let im: f32 = 2.0 * PI * (i as f32 / 50.0);
@@ -197,7 +196,12 @@ mod tests {
 
         let elements = psd.get_psd();
         println!("{:?}", elements);
+        assert_eq!(elements.len(), FFT_SIZE);
         // symmetric peaks
+        // bins 129 - 255 are 0-128hz so... this kinda seems wrong tbh
+        // I would expect 128 +/- 50 to be the peaks
+        // nope, jk, it's +/- 5 because the wave makes 256/50 cycles within
+        // our sample period
         assert_eq!(elements[123], elements[133]);
         // should be ~= -11.5
         assert!(elements[123] > -12.0);
@@ -205,7 +209,12 @@ mod tests {
 
         assert!(elements[133] > -12.0);
         assert!(elements[133] < -10.0);
-    }
 
-    // TODO test get_freq_range()
+        println!("{:?}", psd.get_freq_range());
+        assert_eq!(psd.get_freq_range().len(), FFT_SIZE);
+        // TODO I think this is actually wrong, should start at -127 I think?
+        // (I'm missing one of the two removed values of the FFT I think)
+        assert_eq!(psd.get_freq_range()[0], -128.0);
+        assert_eq!(psd.get_freq_range()[255], 127.0);
+    }
 }
