@@ -8,10 +8,7 @@ edition = "2021"
 [dependencies]
 byteorder = "1.5.0"
 num-complex = "0.4.5"
-piston_window = "0.120.0"
 plotters = "0.3.5"
-plotters-piston = { git = "https://github.com/plotters-rs/plotters-piston" }
-#plotters-piston = "0.3.0"
 rustfft = "6.2.0"
 signalbool = "0.2.5"
 simple_moving_average = "1.0.2"

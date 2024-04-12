@@ -8,9 +8,7 @@ use std::time::Instant;
 use num_complex::Complex;
 use soapysdr::Direction::Rx;
 
-//use piston_window::{EventLoop, PistonWindow, WindowSettings};
 use plotters::prelude::*;
-//use plotters_piston::{draw_piston_window};
 
 use crate::averagepsd::AveragePsd;
 
