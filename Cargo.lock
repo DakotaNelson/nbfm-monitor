@@ -500,6 +500,8 @@ dependencies = [
  "signalbool",
  "simple_moving_average",
  "soapysdr",
+ "waveform",
+ "wavegen",
 ]
 
 [[package]]
@@ -713,6 +715,12 @@ name = "regex-syntax"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08c74e62047bb2de4ff487b251e4a92e24f48745648451635cec7d591162d9f"
+
+[[package]]
+name = "rlibc"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc874b127765f014d792f16763a81245ab80500e2ad921ed4ee9e82481ee08fe"
 
 [[package]]
 name = "rustc-hash"
@@ -946,6 +954,24 @@ name = "wasm-bindgen-shared"
 version = "0.2.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af190c94f2773fdb3729c55b007a722abb5384da03bc0986df4c289bf5567e96"
+
+[[package]]
+name = "waveform"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b89d3edae41ed08378f9510d7a91b99a121e8ca8976a2498c3c8704b764bd71"
+dependencies = [
+ "rlibc",
+]
+
+[[package]]
+name = "wavegen"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2913201c3194677183e058a7ddb1a237a19e4e6b97275d9fe431c41a247f449c"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "web-sys"

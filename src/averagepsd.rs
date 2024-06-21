@@ -1,6 +1,5 @@
 use std::f32::consts::PI;
 use rustfft::{FftPlanner, Fft};
-use rustfft::num_traits::Pow;
 use simple_moving_average::{SMA, NoSumSMA};
 use std::sync::Arc;
 use num_complex::Complex;
@@ -50,12 +49,20 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
 
         // both of these modify samples in-place
         self.hamming_window(samples).expect("failed to apply hamming window to samples");
+
         self.fft.process(samples);
 
+        // output will go here (f32 instead of complex like the input)
         let mut psd: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
+
+        // "RustFFT does not normalize outputs. Callers must manually normalize
+        // the results by scaling each element by 1/len().sqrt()"
+        // https://docs.rs/rustfft/latest/rustfft/index.html#normalization
+        let norm_factor:f32 = 1.0 / (FFT_SIZE as f32).sqrt();
         for i in 0..FFT_SIZE {
-            let sample: f32 = samples[i].norm().pow(2) / (FFT_SIZE * self.samp_rate) as f32;
-            psd[i] = 10.0 * sample.log10(); // convert to dB
+            // normalize FFT output
+            psd[i] = samples[i].norm() * norm_factor;
+            psd[i] = 10.0 * psd[i].log10(); // convert to dB
         }
 
         Self::fftshift(&mut psd);
@@ -66,8 +73,8 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
 
     fn hamming_window(&self, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<()> {
         // https://math.stackexchange.com/questions/248849/hamming-window-understanding-formula
-        // TODO this really oughta be computed and cached inside a struct for the fft
-        // TODO - write the window as a const fn or something
+        // TODO:optimization this really oughta be computed and cached inside
+        // a struct for the fft - write the window as a const fn or something
         let mut window: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
         for n in 0..FFT_SIZE {
             let numerator = 2.0 * PI * (n as f32);
@@ -88,7 +95,8 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
     fn fftshift(fftbuf: &mut [f32; FFT_SIZE]) {
 
         // NOTE only works for even-length FFTs right now
-        // TODO return better error, compile time check, or fix for odd len
+        // TODO:reliability return better error, do compile time check, or
+        // fix for odd len fftbuf
         assert_eq!(FFT_SIZE % 2, 0);
 
         // In Octave:
@@ -118,7 +126,7 @@ impl<const AVG_WINDOW_SIZE: usize, const FFT_SIZE: usize> AveragePsd<AVG_WINDOW_
 mod tests {
     use crate::AveragePsd;
     use num_complex::Complex;
-    use core::f32::consts::PI;
+    use wavegen;
 
     #[test]
     fn fftshift_even_len() {
@@ -158,8 +166,8 @@ mod tests {
     #[test]
     fn all_zero_psd() {
         // pass all-zero samples into the code and get -inf decibels out
-        // avg window of 10, FFT size of 8
-        const FFT_SIZE: usize = 8;
+        // avg window of 10, FFT size of 1024
+        const FFT_SIZE: usize = 1024;
         let psd = AveragePsd::<10, FFT_SIZE>::new(1, 1);
 
         let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(0.0, 0.0); FFT_SIZE];
@@ -173,24 +181,28 @@ mod tests {
         }
     }
 
-    // TODO test the FFT with a pure sine wave
     #[test]
     fn psd_of_sine_wave() {
         const FFT_SIZE: usize = 256;
 
-        let samp_rate: usize = 256; // in Hz
+        let samp_rate: f32 = 256.; // in Hz
         let center_freq: usize = 0;
 
-        let mut psd = AveragePsd::<1, FFT_SIZE>::new(samp_rate, center_freq);
+        let mut psd = AveragePsd::<1, FFT_SIZE>::new(samp_rate as usize, center_freq);
 
-        // sine wave @ one cycle/50 samples
+
+        let mut signal = wavegen::Waveform::<f32>::new(samp_rate);
+        signal.add_component(wavegen::sine!(50.));
+
+        let samples_re = signal.iter().take(FFT_SIZE).collect::<Vec<f32>>();
         let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(0.0, 0.0); FFT_SIZE];
-        for i in 0..samples.len() {
-            let im: f32 = 2.0 * PI * (i as f32 / 50.0);
-            // e^(i*theta) = cos(theta) + i*sin(theta)
-            // sin(z) = (e^iz - e^-iz)/2i
-            samples[i] = Complex::new(0.0, im.sin());
+
+        for i in 0..samples_re.len() {
+            samples[i] = Complex::new(samples_re[i], 0.0);
         }
+
+        println!("{:?}", samples_re);
+        println!("{:?}", samples);
 
         psd.update(&mut samples);
 
@@ -198,23 +210,24 @@ mod tests {
         println!("{:?}", elements);
         assert_eq!(elements.len(), FFT_SIZE);
         // symmetric peaks
-        // bins 129 - 255 are 0-128hz so... this kinda seems wrong tbh
-        // I would expect 128 +/- 50 to be the peaks
-        // nope, jk, it's +/- 5 because the wave makes 256/50 cycles within
-        // our sample period
-        assert_eq!(elements[123], elements[133]);
-        // should be ~= -11.5
-        assert!(elements[123] > -12.0);
-        assert!(elements[123] < -10.0);
+        assert!((elements[79] - elements[179]).abs() < 0.0001);
 
-        assert!(elements[133] > -12.0);
-        assert!(elements[133] < -10.0);
+        // peaks should be ~= -2.67 dB
+        assert!(elements[79] > 2.6);
+        assert!(elements[179] < 2.7);
+
+        assert!(elements[79] > 2.6);
+        assert!(elements[179] < 2.7);
 
         println!("{:?}", psd.get_freq_range());
         assert_eq!(psd.get_freq_range().len(), FFT_SIZE);
-        // TODO I think this is actually wrong, should start at -127 I think?
-        // (I'm missing one of the two removed values of the FFT I think)
+        // TODO:bugfix I think this is actually wrong, should start at -127 I
+        // think? (missing one of the two removed values of the FFT maybe?)
         assert_eq!(psd.get_freq_range()[0], -128.0);
+
+        // bins 128 - 255 are 0-127hz
+        assert_eq!(psd.get_freq_range()[128], center_freq as f32);
         assert_eq!(psd.get_freq_range()[255], 127.0);
+
     }
 }

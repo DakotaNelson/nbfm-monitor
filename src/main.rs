@@ -22,11 +22,12 @@ const FFT_SIZE: usize = 512;
 // (e.g. 10,000 FFT/s when using 10kHz channel width)
 
 // window of the running average
-const AVG_WINDOW_SIZE: usize = (SAMP_RATE / FFT_SIZE) * 5; // 10 seconds of averaging
+const AVG_WINDOW_SIZE: usize = (SAMP_RATE / FFT_SIZE) * 1; // 2 seconds of averaging
                                                        // (only compute every *other*
                                                        // FFT right now)
 
 fn main() {
+    // TODO:cleanup move the SDR logic into an SDR struct or similar
     let dev_filter = "driver=rtlsdr";
     let channel = 0;
     //let fname = "testfile";
@@ -68,7 +69,7 @@ fn main() {
     // the buffer we read IQ data into from the SDR
     let mut buf = vec![Complex::new(0.0, 0.0); mtu];
 
-    // this should move to a setup func or PSD struct or somethin
+    // TODO:cleanup this should move to a setup func or PSD struct or somethin
     let mut average_psd: AveragePsd<AVG_WINDOW_SIZE, FFT_SIZE> = AveragePsd::<AVG_WINDOW_SIZE, FFT_SIZE>::new(SAMP_RATE, CENTER_FREQ);
 
     stream.activate(None).expect("failed to activate stream");
@@ -79,7 +80,7 @@ fn main() {
         println!("Read {} bytes...", len);
         num_samples -= len;
 
-        // TODO consider moving this into the struct
+        // TODO:cleanup consider moving this into the struct
         // ignore some data so buf is a multiple of FFT_SIZE
         let sample_start_index = len % FFT_SIZE;
 
@@ -99,20 +100,24 @@ fn main() {
             average_psd.update(&mut samples);
 
         }
-        // TODO set up the actual "find n highest peaks" functionality
+        let duration = start.elapsed();
+        println!(" in {:?}", duration);
+        // TODO:feature set up the actual "find n highest peaks" functionality
         // 1) find all signals above squelch threshold
         // 2) identify "peaks"? (could do n highest easily, or could deconflict
         //      peaks and then report all of them)
         // 3) push into idk stdout or something
-        let duration = start.elapsed();
-        println!(" in {:?}", duration);
+
+        // 1. find max(psd)
+        // 2. "zero out" a 12.5 kHz channel (nbfm) around the peak
+        // 3. repeat
     }
 
     stream.deactivate(None).expect("failed to deactivate stream");
 
     // display the output using plotters-rs
 
-    let drawing_area = SVGBackend::new("chart_builder_on.svg", (600, 400)).into_drawing_area();
+    let drawing_area = SVGBackend::new("psd.svg", (600, 400)).into_drawing_area();
     drawing_area.fill(&WHITE).unwrap();
 
     let frequency_range = average_psd.get_freq_range();
