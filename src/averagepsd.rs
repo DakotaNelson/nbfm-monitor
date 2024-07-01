@@ -59,8 +59,6 @@ impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, A
 
         self.fft.process(samples);
 
-        let mut scratch: [f32; Self::PSD_SIZE] = [f32::NAN; Self::PSD_SIZE];
-
         // "RustFFT does not normalize outputs. Callers must manually normalize
         // the results by scaling each element by 1/len().sqrt()"
         // https://docs.rs/rustfft/latest/rustfft/index.html#normalization

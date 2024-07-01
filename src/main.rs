@@ -1,3 +1,5 @@
+#![feature(generic_const_exprs)]
+
 mod averagepsd;
 
 use std::io::Write;
@@ -8,7 +10,7 @@ use std::time::Instant;
 use num_complex::Complex;
 use soapysdr::Direction::Rx;
 
-use plotters::prelude::*;
+//use plotters::prelude::*;
 
 use crate::averagepsd::AveragePsd;
 
@@ -70,7 +72,7 @@ fn main() {
     let mut buf = vec![Complex::new(0.0, 0.0); mtu];
 
     // TODO:cleanup this should move to a setup func or PSD struct or somethin
-    let mut average_psd: AveragePsd<AVG_WINDOW_SIZE, FFT_SIZE> = AveragePsd::<AVG_WINDOW_SIZE, FFT_SIZE>::new(SAMP_RATE, CENTER_FREQ);
+    let mut average_psd: AveragePsd<FFT_SIZE, AVG_WINDOW_SIZE> = AveragePsd::<FFT_SIZE, AVG_WINDOW_SIZE>::new(SAMP_RATE, CENTER_FREQ);
 
     stream.activate(None).expect("failed to activate stream");
 
@@ -117,37 +119,37 @@ fn main() {
 
     // display the output using plotters-rs
 
-    let drawing_area = SVGBackend::new("psd.svg", (600, 400)).into_drawing_area();
-    drawing_area.fill(&WHITE).unwrap();
-
-    let frequency_range = average_psd.get_freq_range();
-    let data = average_psd.get_psd();
-
-    let mut cc = ChartBuilder::on(&drawing_area)
-        .margin(10)
-        .caption("PSD of Spectrum", ("sans-serif",30))
-        .x_label_area_size(40)
-        .y_label_area_size(50)
-        .build_cartesian_2d(frequency_range[0]..frequency_range[FFT_SIZE-1],
-                            -120.0 as f32..20.0 as f32) // dB
-        .unwrap();
-
-    cc.configure_mesh()
-        .x_label_formatter(&|x| format!("{}", x/1e6)) // convert Hz -> MHz
-        //.y_label_formatter(&|y| format!("{}%", (*y * 100.0) as u32))
-        .x_labels(10)
-        .y_labels(5)
-        .x_desc("Frequency (MHz)")
-        .y_desc("Power (dB)")
-        .axis_desc_style(("sans-serif", 15))
-        .draw()
-        .unwrap();
-
-    println!("{:?}", frequency_range.iter().zip(data.iter()));
-    cc.draw_series(LineSeries::new(
-            frequency_range.iter().zip(data.iter()).map(|(a, b)| (*a, *b)),
-            BLACK)
-        ).unwrap();
+    // let drawing_area = SVGBackend::new("psd.svg", (600, 400)).into_drawing_area();
+    // drawing_area.fill(&WHITE).unwrap();
+    //
+    // let frequency_range = average_psd.get_freq_range();
+    // let data = average_psd.get_psd();
+    //
+    // let mut cc = ChartBuilder::on(&drawing_area)
+    //     .margin(10)
+    //     .caption("PSD of Spectrum", ("sans-serif",30))
+    //     .x_label_area_size(40)
+    //     .y_label_area_size(50)
+    //     .build_cartesian_2d(frequency_range[0]..frequency_range[FFT_SIZE-1],
+    //                         -120.0 as f32..20.0 as f32) // dB
+    //     .unwrap();
+    //
+    // cc.configure_mesh()
+    //     .x_label_formatter(&|x| format!("{}", x/1e6)) // convert Hz -> MHz
+    //     //.y_label_formatter(&|y| format!("{}%", (*y * 100.0) as u32))
+    //     .x_labels(10)
+    //     .y_labels(5)
+    //     .x_desc("Frequency (MHz)")
+    //     .y_desc("Power (dB)")
+    //     .axis_desc_style(("sans-serif", 15))
+    //     .draw()
+    //     .unwrap();
+    //
+    // println!("{:?}", frequency_range.iter().zip(data.iter()));
+    // cc.draw_series(LineSeries::new(
+    //         frequency_range.iter().zip(data.iter()).map(|(a, b)| (*a, *b)),
+    //         BLACK)
+    //     ).unwrap();
 
     // write out results
     let mut outfile = File::create("fft-out").expect("cannot open output file");
