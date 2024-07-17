@@ -17,18 +17,16 @@ pub struct AveragePsd<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> {
 }
 
 impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, AVG_WINDOW_SIZE> {
-    //const FFT_SIZE: usize = FFT_SIZE;
-    //const AVG_WINDOW_SIZE: usize = AVG_WINDOW_SIZE;
-    const PSD_SIZE: usize = (FFT_SIZE / 2) + 1;
+    //const PSD_SIZE: usize = (FFT_SIZE / 2) + 1;
 
     pub fn new(samp_rate: usize, center_freq: usize) -> AveragePsd<FFT_SIZE, AVG_WINDOW_SIZE> {
         let fft = FftPlanner::new().plan_fft_forward(FFT_SIZE);
-        let psd_averages = vec!(NoSumSMA::<f32, f32, AVG_WINDOW_SIZE>::new();  Self::PSD_SIZE);
+        let psd_averages = vec!(NoSumSMA::<f32, f32, AVG_WINDOW_SIZE>::new();  FFT_SIZE);
 
         AveragePsd::<FFT_SIZE, AVG_WINDOW_SIZE>{samp_rate, center_freq, fft, psd_averages}
     }
 
-    pub fn update(&mut self, samples: &mut [Complex<f32>; FFT_SIZE]) where [(); Self::PSD_SIZE]: {
+    pub fn update(&mut self, samples: &mut [Complex<f32>; FFT_SIZE]) {
         let psd = self.calc_psd(samples).expect("unable to calculate PSD");
         // keep a running average of PSD values
         for (index, element) in psd.into_iter().enumerate() {
@@ -36,8 +34,8 @@ impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, A
         }
     }
 
-    pub fn get_psd(&self) -> [f32; Self::PSD_SIZE] {
-        let mut avg_psd: [f32; Self::PSD_SIZE] = [0.0; Self::PSD_SIZE];
+    pub fn get_psd(&self) -> [f32; FFT_SIZE] {
+        let mut avg_psd: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
         for (index, element) in self.psd_averages.iter().enumerate() {
             avg_psd[index] = element.get_average();
         }
@@ -45,18 +43,16 @@ impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, A
         return avg_psd;
     }
 
-    // TODO don't use io::Error here, I guess, probably
-    fn calc_psd(&self, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<[f32; Self::PSD_SIZE]> where [(); Self::PSD_SIZE]: {
+    fn calc_psd(&self, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<[f32; FFT_SIZE]> {
         // https://pysdr.org/content/sampling.html#calculating-power-spectral-density
 
         // fft[0] -> DC (or samp_rate)
-        // fft[len/2 + 1] -> nyquist f
+        // fft[len/2 + 1] -> nyquist f NOTE this assumes non-quadrature
         // fft[1] to fft[len/2] are positive frequencies, step is samp_rate/len(fft)
         // https://www.gaussianwaves.com/2015/11/interpreting-fft-results-complex-dft-frequency-bins-and-fftshift/
 
         // both of these modify samples in-place
         self.hamming_window(samples).expect("failed to apply hamming window to samples");
-
         self.fft.process(samples);
 
         // "RustFFT does not normalize outputs. Callers must manually normalize
@@ -67,17 +63,15 @@ impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, A
         // TODO:reliability improve this
         assert_eq!(FFT_SIZE % 2, 0);
 
-        // for i in 0..Self::PSD_SIZE {
-        //     // normalize FFT output
-        //     scratch[i] = samples[i].norm() * norm_factor;
-        //     // convert to dB
-        //     scratch[i] = 10.0 * scratch[i].log10();
-        // }
-
-        let psd: Vec<f32> = samples[0..Self::PSD_SIZE].into_iter().map(|fft_step| {
+        // TODO:feature this should go from -samp_rate/2 to samp_rate/2 rather
+        // than 0 - samp_rate, see https://pysdr.org/content/rtlsdr.html
+        let psd: Vec<f32> = samples.into_iter().map(|fft_step| {
             (fft_step.norm() * norm_factor * 10.0).log10() }).collect();
 
-        Ok(psd.try_into().expect("failed convert vec->arr in calc_psd"))
+        let mut retval: [f32; FFT_SIZE] = psd.try_into().expect("failed convert vec->arr in calc_psd");
+        Self::fftshift(&mut retval);
+
+        Ok(retval)
     }
 
     fn hamming_window(&self, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<()> {
@@ -101,28 +95,29 @@ impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, A
     }
 
     // https://numpy.org/doc/stable/reference/generated/numpy.fft.fftshift.html
-    // fn fftshift(fftbuf: &mut [f32; FFT_SIZE]) {
-    //
-    //     // NOTE only works for even-length FFTs right now
-    //     // TODO:reliability return better error, do compile time check, or
-    //     // fix for odd len fftbuf
-    //     assert_eq!(FFT_SIZE % 2, 0);
-    //
-    //     // In Octave:
-    //     // horzcat(f_ham(ceil((buflen-1)/2):-1:1), 0, f_ham(1:floor((buflen-1)/2)));
-    //     let cutoff_point = ((FFT_SIZE-1) as f32)/2.0;
-    //     fftbuf.rotate_left(cutoff_point.ceil() as usize);
-    // }
+    fn fftshift(fftbuf: &mut [f32; FFT_SIZE]) {
 
-    pub fn get_freq_range(&self) -> [f32; Self::PSD_SIZE] {
-        // returns the frequency steps of the FFT/PSD
+        // NOTE only works for even-length FFTs right now
+        // TODO:reliability return better error, do compile time check, or
+        // fix for odd len fftbuf
+        assert_eq!(FFT_SIZE % 2, 0);
+
+        // In Octave:
+        // horzcat(f_ham(ceil((buflen-1)/2):-1:1), 0, f_ham(1:floor((buflen-1)/2)));
+        let cutoff_point = ((FFT_SIZE-1) as f32)/2.0;
+        fftbuf.rotate_left(cutoff_point.ceil() as usize);
+    }
+
+    pub fn get_freq_range(&self) -> [f32; FFT_SIZE] {
+        // returns the frequency steps of the fftshift-ed FFT/PSD
         //let mut freq_range: [f32; (FFT_SIZE/2)+1] = [0.0; (FFT_SIZE/2)+1];
-        let mut freq_range: [f32; Self::PSD_SIZE] = [0.; Self::PSD_SIZE];
+        let mut freq_range: [f32; FFT_SIZE] = [0.; FFT_SIZE];
         let mut i = 0;
 
-        let delta_f: f32 = (self.samp_rate as f32 / 2.) / (Self::PSD_SIZE as f32 - 1.);
-        while i < Self::PSD_SIZE {
-            freq_range[i] = self.center_freq as f32 + (delta_f * i as f32);
+        let delta_f: f32 = self.samp_rate as f32 / FFT_SIZE as f32;
+        let start: f32 = self.center_freq as f32 - (self.samp_rate as f32 / 2.);
+        while i < FFT_SIZE {
+            freq_range[i] = start + (delta_f * i as f32);
             i += 1;
         }
 
@@ -137,26 +132,26 @@ mod tests {
     use num_complex::Complex;
     use wavegen;
 
-    // #[test]
-    // fn fftshift_even_len() {
-    //     let mut startbuf: [f32; 8] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
-    //     // avg window of 1, FFT size of 8
-    //     AveragePsd::<8, 1>::fftshift(&mut startbuf);
-    //     let endbuf: [f32; 8] = [4.0, 5.0, 6.0, 7.0, 0.0, 1.0, 2.0, 3.0];
-    //     assert_eq!(startbuf, endbuf);
-    // }
-    //
-    // #[test]
-    // #[should_panic(expected = "assertion `left == right` failed")]
-    // fn fftshift_odd_len() {
-    //     let mut startbuf: [f32; 7] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-    //     // avg window of 1, FFT size of 8
-    //     AveragePsd::<7,1>::fftshift(&mut startbuf);
-    //     // should panic on the line above due to an assert() in fftshift
-    //     let endbuf: [f32; 7] = [4.0, 5.0, 6.0, 0.0, 1.0, 2.0, 3.0];
-    //     // this is not great but for now it'll work
-    //     assert_eq!(startbuf, endbuf);
-    // }
+    #[test]
+    fn fftshift_even_len() {
+        let mut startbuf: [f32; 8] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        // avg window of 1, FFT size of 8
+        AveragePsd::<8, 1>::fftshift(&mut startbuf);
+        let endbuf: [f32; 8] = [4.0, 5.0, 6.0, 7.0, 0.0, 1.0, 2.0, 3.0];
+        assert_eq!(startbuf, endbuf);
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion `left == right` failed")]
+    fn fftshift_odd_len() {
+        let mut startbuf: [f32; 7] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // avg window of 1, FFT size of 8
+        AveragePsd::<7,1>::fftshift(&mut startbuf);
+        // should panic on the line above due to an assert() in fftshift
+        let endbuf: [f32; 7] = [4.0, 5.0, 6.0, 0.0, 1.0, 2.0, 3.0];
+        // this is not great but for now it'll work
+        assert_eq!(startbuf, endbuf);
+    }
 
     #[test]
     fn hamming_window_correct() {
@@ -229,14 +224,21 @@ mod tests {
         println!("PSD frequency steps:");
         println!("{:?}", psd.get_freq_range());
 
-        assert_eq!(elements.len(), (FFT_SIZE/2)+1);
-        // make sure our frequency (50Hz) is above 0dB
-        assert_eq!(elements[50], 1.6327056);
+        assert_eq!(psd.get_freq_range().len(), FFT_SIZE);
+        assert_eq!(psd.get_freq_range()[0], -128.);
+        assert_eq!(psd.get_freq_range()[64], -64.);
+        assert_eq!(psd.get_freq_range()[128], 0.);
+        assert_eq!(psd.get_freq_range()[255], 127.);
 
-        println!("{:?}", psd.get_freq_range());
-        assert_eq!(psd.get_freq_range().len(), (FFT_SIZE/2)+1);
-        assert_eq!(psd.get_freq_range()[0], 0.);
-        assert_eq!(psd.get_freq_range()[64], 64.);
-        assert_eq!(psd.get_freq_range()[128], 128.);
+        assert_eq!(elements.len(), FFT_SIZE);
+        // make sure test frequency (50Hz) is present
+        assert_eq!(psd.get_freq_range()[178], 50.);
+        assert_eq!(elements[178], 1.6327056);
+
+        // mirror freq at -50Hz should also be present
+        assert_eq!(psd.get_freq_range()[78], -50.);
+        assert_eq!(elements[78], 1.6327056);
     }
+
+    // TODO:test test center_freq != 0
 }

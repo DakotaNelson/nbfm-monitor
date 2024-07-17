@@ -1,4 +1,4 @@
-#![feature(generic_const_exprs)]
+//#![feature(generic_const_exprs)]
 
 mod averagepsd;
 
@@ -10,13 +10,11 @@ use std::time::Instant;
 use num_complex::Complex;
 use soapysdr::Direction::Rx;
 
-//use plotters::prelude::*;
-
 use crate::averagepsd::AveragePsd;
 
 // sample rate of our SDR
-const SAMP_RATE: usize = 3_200_000; // 3.2 MHz
-const CENTER_FREQ: usize = 147_000_000; // where to tune the SDR
+const SAMP_RATE: usize = 2_400_000; // 2.4 MHz
+const CENTER_FREQ: usize = 100_200_000; // where to tune the SDR
 const FFT_SIZE: usize = 512;
 // divide into 6.25kHZ channels
 // NBFM is ~11 kHz signal so it'll get smeared but hopefully we'll be ok
@@ -32,7 +30,6 @@ fn main() {
     // TODO:cleanup move the SDR logic into an SDR struct or similar
     let dev_filter = "driver=rtlsdr";
     let channel = 0;
-    //let fname = "testfile";
     // how many samples to capture before closing the stream
     //let mut num_samples = i64::MAX;
     let mut num_samples = SAMP_RATE * 5; // sample for n seconds
@@ -67,14 +64,18 @@ fn main() {
     println!("Starting stream...");
     let mut stream = dev.rx_stream::<Complex<f32>>(&[channel]).expect("Failed to open RX stream");
     println!("Fetching MTU...");
-    let mtu = stream.mtu().expect("Failed to get MTU");
+    let mtu: usize = stream.mtu().expect("Failed to get MTU");
     // the buffer we read IQ data into from the SDR
     let mut buf = vec![Complex::new(0.0, 0.0); mtu];
 
-    // TODO:cleanup this should move to a setup func or PSD struct or somethin
+    // TODO:cleanup this should move to a setup func or PSD struct or something
     let mut average_psd: AveragePsd<FFT_SIZE, AVG_WINDOW_SIZE> = AveragePsd::<FFT_SIZE, AVG_WINDOW_SIZE>::new(SAMP_RATE, CENTER_FREQ);
 
     stream.activate(None).expect("failed to activate stream");
+
+    // throw away first MTU of samples while SDR boots/settles
+    // see: https://pysdr.org/content/rtlsdr.html#gain-setting
+    stream.read(&mut [&mut buf[..mtu]], 1_000_000).expect("error reading stream");
 
     while num_samples > 0 && !sb.caught() {
         let read_size = min(num_samples as usize, buf.len());
@@ -84,6 +85,7 @@ fn main() {
 
         // TODO:cleanup consider moving this into the struct
         // ignore some data so buf is a multiple of FFT_SIZE
+        // can also pad with zeroes
         let sample_start_index = len % FFT_SIZE;
 
         // how many FFTs do we need to consume all the samples
@@ -117,40 +119,6 @@ fn main() {
 
     stream.deactivate(None).expect("failed to deactivate stream");
 
-    // display the output using plotters-rs
-
-    // let drawing_area = SVGBackend::new("psd.svg", (600, 400)).into_drawing_area();
-    // drawing_area.fill(&WHITE).unwrap();
-    //
-    // let frequency_range = average_psd.get_freq_range();
-    // let data = average_psd.get_psd();
-    //
-    // let mut cc = ChartBuilder::on(&drawing_area)
-    //     .margin(10)
-    //     .caption("PSD of Spectrum", ("sans-serif",30))
-    //     .x_label_area_size(40)
-    //     .y_label_area_size(50)
-    //     .build_cartesian_2d(frequency_range[0]..frequency_range[FFT_SIZE-1],
-    //                         -120.0 as f32..20.0 as f32) // dB
-    //     .unwrap();
-    //
-    // cc.configure_mesh()
-    //     .x_label_formatter(&|x| format!("{}", x/1e6)) // convert Hz -> MHz
-    //     //.y_label_formatter(&|y| format!("{}%", (*y * 100.0) as u32))
-    //     .x_labels(10)
-    //     .y_labels(5)
-    //     .x_desc("Frequency (MHz)")
-    //     .y_desc("Power (dB)")
-    //     .axis_desc_style(("sans-serif", 15))
-    //     .draw()
-    //     .unwrap();
-    //
-    // println!("{:?}", frequency_range.iter().zip(data.iter()));
-    // cc.draw_series(LineSeries::new(
-    //         frequency_range.iter().zip(data.iter()).map(|(a, b)| (*a, *b)),
-    //         BLACK)
-    //     ).unwrap();
-
     // write out results
     let mut outfile = File::create("fft-out").expect("cannot open output file");
     let mut freq_outfile = File::create("fft-freq").expect("cannot open output file");
@@ -162,7 +130,7 @@ fn main() {
 
     // write the fft's frequency steps to plot against
     for elem in average_psd.get_freq_range().iter() {
-        writeln!(freq_outfile, "{} ", elem).expect("error writing");
+        writeln!(freq_outfile, "{} ", elem/1_000_000.).expect("error writing");
     }
 }
 
