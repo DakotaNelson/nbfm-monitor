@@ -66,7 +66,7 @@ impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, A
         // TODO:feature this should go from -samp_rate/2 to samp_rate/2 rather
         // than 0 - samp_rate, see https://pysdr.org/content/rtlsdr.html
         let psd: Vec<f32> = samples.into_iter().map(|fft_step| {
-            (fft_step.norm() * norm_factor * 10.0).log10() }).collect();
+            (fft_step.norm() * norm_factor).log10() * 10.0 }).collect();
 
         let mut retval: [f32; FFT_SIZE] = psd.try_into().expect("failed convert vec->arr in calc_psd");
         Self::fftshift(&mut retval);
