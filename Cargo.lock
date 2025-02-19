@@ -2179,6 +2179,7 @@ name = "nbfm-monitor"
 version = "0.1.0"
 dependencies = [
  "byteorder",
+ "crossbeam-channel",
  "nbfm-monitor-ui",
  "num-complex",
  "plotters",
