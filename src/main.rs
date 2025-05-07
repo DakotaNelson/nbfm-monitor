@@ -30,8 +30,7 @@ fn main() {
     let dev_args = match devs.len() {
         0 => {
             eprintln!("no matching SDR devices found");
-            // TODO return an error
-            panic!("can't find any SDRs");
+            std::process::exit(1);
         }
         1 => devs.into_iter().next().unwrap(),
         n => {
@@ -39,8 +38,7 @@ fn main() {
             for dev in devs {
                 eprintln!("\t'{}'", dev);
             }
-            // TODO return an error
-            panic!("multiple matching SDR devices");
+            std::process::exit(1);
         }
     };
 
@@ -50,8 +48,9 @@ fn main() {
     // create monitor(s)
     // TODO only works for one monitor right now
     let dev = soapysdr::Device::new(dev_args).expect("Error opening device");
-    let mut mon = Monitor::<FFT_SIZE, AVG_WINDOW_SIZE>::new(dev, mon_send.clone(), SAMP_RATE, center_freq);
+    let mut mon = Monitor::<FFT_SIZE, AVG_WINDOW_SIZE>::new(dev, mon_send.clone(), mon_recv.clone(), SAMP_RATE, center_freq);
     // start monitor(s)
+    // TODO keep the handles, join() on shutdown
     let _handle = thread::spawn(move || mon.start());
 
     // start TCP server
@@ -101,10 +100,13 @@ fn main() {
     }
 
     // eventually, stop
-    // TODO catch ctrl-c and clean up streams
-    // TODO figure out way for threads to clean up gracefully
+    // TODO catch ctrl-c and:
+    //   - send STOP to each monitor
+    //   - send STOP to TCP listener thread
+    //   - wait for each thread to join()
+    //
     // send.send(Message::Stop{}).expect("Should be able to send a message to stop threads");
-    // handle.join().unwrap();
+    // for handle in handles: handle.join().unwrap();
 }
 
 fn serve_tcp(listener: TcpListener, sender: crossbeam_channel::Sender<Client>) {

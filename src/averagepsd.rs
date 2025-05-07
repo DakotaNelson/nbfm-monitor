@@ -14,6 +14,9 @@ pub struct AveragePsd<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> {
     psd_averages: Vec<NoSumSMA::<f32, f32, { AVG_WINDOW_SIZE }>>,
     // probably worth implementing this myself soonish so that the window
     // can be adjusted on the fly rather than passing a const
+    // note also that the window is "number of FFTs" not # of seconds or etc.
+    // which would be nice for a custom implementation to take into account
+    // considering we have access to samp_rate and FFT_SIZE
 }
 
 impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, AVG_WINDOW_SIZE> {
@@ -128,7 +131,7 @@ impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, A
 
 #[cfg(test)]
 mod tests {
-    use crate::AveragePsd;
+    use crate::averagepsd::AveragePsd;
     use num_complex::Complex;
     use wavegen;
 

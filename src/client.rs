@@ -28,10 +28,6 @@ impl Client {
         return self.sender.clone();
     }
 
-    pub fn get_rcv_channel(&self) -> crossbeam_channel::Receiver<Message> {
-        return self.receiver.clone();
-    }
-
     pub fn start(&mut self) {
         println!("Client connected");
         loop {
@@ -42,6 +38,8 @@ impl Client {
                 .expect("should be able to serialize frame message");
 
             // without flush, ~5 frames are batched to send, causing lag
+            // maybe set_nodelay instead?
+            // stream.set_nodelay(true).expect("set_nodelay call failed");
             match writer.flush() {
                 Ok(_) => {},
                 Err(e) => match e.kind() {

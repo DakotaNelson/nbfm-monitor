@@ -5,37 +5,35 @@ use nbfm_monitor_ui::messages::Message;
 
 use soapysdr::Direction::Rx;
 use soapysdr::Device;
-use std::time::Instant;
 use num_complex::Complex;
+use crossbeam_channel::TryRecvError;
 
 pub struct Monitor<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> {
-    samp_rate: usize,
-    center_freq: usize,
     sdr_channel: usize,
     average_psd: AveragePsd<FFT_SIZE, AVG_WINDOW_SIZE>,
     dev: Device,
     sender: crossbeam_channel::Sender<Message>,
+    recvr: crossbeam_channel::Receiver<Message>,
 }
 
 impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG_WINDOW_SIZE> {
-    pub fn new(dev: Device, send: crossbeam_channel::Sender<Message>, samp_rate: usize, center_freq: usize) -> Monitor<FFT_SIZE, AVG_WINDOW_SIZE> {
+    pub fn new(dev: Device, send: crossbeam_channel::Sender<Message>, recv: crossbeam_channel::Receiver<Message>, samp_rate: usize, center_freq: usize) -> Monitor<FFT_SIZE, AVG_WINDOW_SIZE> {
         // right now, only single-channel SDRs work
         let sdr_channel = 0;
 
         dev.set_frequency(Rx, sdr_channel, center_freq as f64, ()).expect("Failed to set frequency");
 
-        println!("Setting sample rate to {}", samp_rate);
+        println!("Sample rate set to {}", samp_rate);
         dev.set_sample_rate(Rx, sdr_channel, samp_rate as f64).expect("Failed to set sample rate");
 
         let average_psd = AveragePsd::<FFT_SIZE, AVG_WINDOW_SIZE>::new(samp_rate, center_freq);
 
         return Monitor::<FFT_SIZE, AVG_WINDOW_SIZE> {
-            samp_rate: samp_rate,
             sdr_channel: sdr_channel,
             dev: dev,
             average_psd: average_psd,
-            center_freq: center_freq,
             sender: send,
+            recvr: recv,
         }
     }
 
@@ -43,8 +41,8 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
     pub fn start(&mut self) {
         println!("Starting stream...");
         let mut stream = self.dev.rx_stream::<Complex<f32>>(&[self.sdr_channel]).expect("Failed to open RX stream");
-        println!("Fetching MTU...");
         let mtu: usize = stream.mtu().expect("Failed to get MTU");
+        println!("MTU set to {mtu}");
         // the buffer we read IQ data into from the SDR
         let mut buf = vec![Complex::new(0.0, 0.0); mtu];
 
@@ -54,10 +52,17 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
         // see: https://pysdr.org/content/rtlsdr.html#gain-setting
         stream.read(&mut [&mut buf[..mtu]], 1_000_000).expect("error reading SDR stream");
 
-        // TODO fetch message(s) from crossbeam_channel, look for STOP message
-        let should_continue = true;
         let read_size = buf.len();
-        while should_continue {
+        loop {
+            // fetch message from crossbeam_channel, look for STOP
+            match self.recvr.try_recv() {
+                Ok(Message::Stop{}) => {
+                    break;
+                },
+                Ok(_) => {}, // ignore other message types for now
+                Err(TryRecvError::Empty) => {},
+                Err(e) => panic!("Panic reading channel in monitor: {e:?}"),
+            }
             let len = match stream.read(&mut [&mut buf[..read_size]], 1_000_000) {
                 Ok(length) => length,
                 Err(e) => match e.code {
@@ -70,9 +75,16 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
             };
             //println!("Read {} bytes...", len);
 
+            // TODO parallelize more so we get fewer/no overflows
+            // https://docs.rs/rayon/latest/rayon/ maybe
+            // parallelize each FFT within a buf probably best (vs starting the
+            // next buf of data before this one has finished) - but async on
+            // the send(frame) would probably help too
             let frame = self.do_fft(len, &buf).expect("Could not do fft");
             self.sender.send(frame).expect("Cannot send to channel from thread");
         }
+
+        // cleanup
         stream.deactivate(None).expect("failed to deactivate stream");
     }
 
@@ -110,13 +122,5 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
         };
 
         return Ok(msg);
-    }
-
-    pub fn get_samp_rate(&self) -> usize {
-        return self.samp_rate;
-    }
-
-    pub fn get_center_freq(&self) -> usize {
-        return self.center_freq;
     }
 }
