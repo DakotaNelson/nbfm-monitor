@@ -15,11 +15,10 @@ pub struct Monitor<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> {
     average_psd: AveragePsd<FFT_SIZE, AVG_WINDOW_SIZE>,
     dev: Device,
     sender: crossbeam_channel::Sender<Message>,
-    recvr: crossbeam_channel::Receiver<Message>,
 }
 
 impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG_WINDOW_SIZE> {
-    pub fn new(dev: Device, send: crossbeam_channel::Sender<Message>, recv: crossbeam_channel::Receiver<Message>, samp_rate: usize, center_freq: usize) -> Monitor<FFT_SIZE, AVG_WINDOW_SIZE> {
+    pub fn new(dev: Device, send: crossbeam_channel::Sender<Message>, samp_rate: usize, center_freq: usize) -> Monitor<FFT_SIZE, AVG_WINDOW_SIZE> {
         // right now, only single-channel SDRs work
         let sdr_channel = 0;
 
@@ -37,7 +36,6 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
             average_psd: average_psd,
             center_freq: center_freq,
             sender: send,
-            recvr: recv,
         }
     }
 
@@ -54,37 +52,39 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
 
         // throw away first MTU of samples while SDR boots/settles
         // see: https://pysdr.org/content/rtlsdr.html#gain-setting
-        stream.read(&mut [&mut buf[..mtu]], 1_000_000).expect("error reading stream");
+        stream.read(&mut [&mut buf[..mtu]], 1_000_000).expect("error reading SDR stream");
 
         // TODO fetch message(s) from crossbeam_channel, look for STOP message
-        let mut should_continue = true;
+        let should_continue = true;
         let read_size = buf.len();
         while should_continue {
-            let len = stream.read(&mut [&mut buf[..read_size]], 1_000_000).expect("error reading stream");
-            println!("Read {} bytes...", len);
+            let len = match stream.read(&mut [&mut buf[..read_size]], 1_000_000) {
+                Ok(length) => length,
+                Err(e) => match e.code {
+                    soapysdr::ErrorCode::Overflow => {
+                        println!("SDR read overflow");
+                        continue;
+                    },
+                    _ => panic!("{}", e),
+                }
+            };
+            //println!("Read {} bytes...", len);
 
             let frame = self.do_fft(len, &buf).expect("Could not do fft");
             self.sender.send(frame).expect("Cannot send to channel from thread");
-
-            let msg = self.recvr.recv().expect("Cannot recv from channel in thread");
-            if msg == (Message::Stop{}) {
-                should_continue = false;
-            }
         }
         stream.deactivate(None).expect("failed to deactivate stream");
     }
 
     fn do_fft(&mut self, len: usize, buf: &Vec<Complex<f32>>) -> Result<Message, &'static str> {
-
-        // TODO:cleanup consider moving this into the struct
         // ignore some data so buf is a multiple of FFT_SIZE
         // can also pad with zeroes
         let sample_start_index = len % FFT_SIZE;
 
         // how many FFTs do we need to consume all the samples
         let fft_size_multiple = (len - sample_start_index) / FFT_SIZE;
-        print!("Computing {} FFTs...", fft_size_multiple);
-        let start = Instant::now();
+        //print!("Computing {} FFTs...", fft_size_multiple);
+        //let start = Instant::now();
 
         for i in 0..fft_size_multiple {
             let start = sample_start_index + (i * FFT_SIZE);
@@ -93,8 +93,8 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
             self.average_psd.update(&mut samples);
 
         }
-        let duration = start.elapsed();
-        println!(" in {:?}", duration);
+        //let duration = start.elapsed();
+        //println!(" in {:?}", duration);
         // TODO:feature set up the actual "find n highest peaks" functionality
         // 1) find all signals above squelch threshold
         // 2) identify "peaks"? (could do n highest easily, or could deconflict
@@ -104,10 +104,9 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
         // 1. find max(psd)
         // 2. "zero out" a 12.5 kHz channel (nbfm) around the peak
         // 3. repeat
-        // TODO keep freqs/values as i32 or change?
         let msg = Message::Frame {
-            freqs: self.average_psd.get_psd().into_iter().map(|x| x as i32).collect(),
-            values: self.average_psd.get_freq_range().into_iter().map(|x| x as i32).collect(),
+            values: self.average_psd.get_psd().into_iter().map(|x| x as f32).collect(),
+            freqs: self.average_psd.get_freq_range().into_iter().map(|x| x as i32).collect(),
         };
 
         return Ok(msg);

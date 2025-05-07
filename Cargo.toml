@@ -17,3 +17,4 @@ waveform = "0.3.2"
 wavegen = "0.4.1"
 nbfm-monitor-ui = { path = "../nbfm-monitor-ui" }
 crossbeam-channel = "0.5.14"
+serde_json = "1.0.139"
