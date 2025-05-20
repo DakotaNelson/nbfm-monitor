@@ -4,8 +4,13 @@ mod averagepsd;
 mod monitor;
 mod client;
 
+use colog;
+use chrono::Local;
+use colog::format::CologStyle;
+use colored::Colorize;
 use std::thread;
 use std::net::TcpListener;
+use log::{Level, LevelFilter, error, warn, info, debug, trace};
 use crossbeam_channel::{TryRecvError, TrySendError};
 
 use nbfm_monitor_ui::messages::Message;
@@ -19,25 +24,58 @@ const SAMP_RATE: usize = 2_560_000; // 2.56 MHz (for rtlsdr)
 // window of the running average
 const AVG_WINDOW_SIZE: usize = (SAMP_RATE / FFT_SIZE) * 2; // 2 seconds of averaging
 
+pub struct CustomPrefixToken;
+impl CologStyle for CustomPrefixToken {
+    fn prefix_token(&self, level: &Level) -> String {
+        let now = Local::now().format("%H:%M:%S");
+        format!(
+            "{}{} {}{}",
+            "[".blue().bold(),
+            self.level_color(level, self.level_token(level)),
+            now,
+            "]".blue().bold(),
+        )
+    }
+
+    fn level_token(&self, level: &Level) -> &str {
+        match *level {
+            Level::Error => "ERR",
+            Level::Warn => "WRN",
+            Level::Info => "INF",
+            Level::Debug => "DBG",
+            Level::Trace => "TRC",
+        }
+    }
+}
+
 fn main() {
     // TODO take in config
     // probably YAML or something defining the radios + bands
     let dev_filter: String = "driver=rtlsdr".to_string();
     let center_freq: usize = 86_200_000; // where to tune the SDR
 
+    // set up logging
+    let mut builder = colog::default_builder();
+    builder.format(colog::formatter(CustomPrefixToken));
+    builder.filter(None, LevelFilter::Trace);
+    builder.init();
+
+    info!("Starting...");
+
     // enumerate the available SDR devices
     let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
     let dev_args = match devs.len() {
         0 => {
-            eprintln!("no matching SDR devices found");
+            error!("no matching SDR devices found");
             std::process::exit(1);
         }
         1 => devs.into_iter().next().unwrap(),
         n => {
-            eprintln!("{} devices found. Choose from:",n);
+            let mut errlog = String::new().to_owned();
             for dev in devs {
-                eprintln!("\t'{}'", dev);
+                errlog = format!("{errlog}\t'{dev}'");
             }
+            error!("{} devices found. Choose from: {}", n, errlog);
             std::process::exit(1);
         }
     };
@@ -58,7 +96,7 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:8080")
         .expect("should be able to bind to a local port");
 
-    println!("TCP listener started on 127.0.0.1:8080"); // TODO
+    info!("TCP listener started on 127.0.0.1:8080"); // TODO
 
     let (tcp_send, tcp_rcv) = crossbeam_channel::unbounded();
     let _handle = thread::spawn(move || serve_tcp(listener, tcp_send));
@@ -70,7 +108,7 @@ fn main() {
             Ok(mut new_client) => {
                 clients.push(new_client.get_send_channel());
                 let _handle = thread::spawn(move || new_client.start());
-                println!("Client successfully subscribed.");
+                info!("Client successfully subscribed.");
             }
             Err(TryRecvError::Empty) => {},
             Err(e) => panic!("{e}"),
@@ -90,7 +128,7 @@ fn main() {
                         Err(e) => panic!("message send panic: {e:?}"),
                     }
                 });
-                //println!("{:?}", serde_json::to_value(&data).unwrap());
+                //debug!("{:?}", serde_json::to_value(&data).unwrap());
             }
             Message::Connect{ .. } => {}
             Message::ConnectResult{ .. } => {}
@@ -110,12 +148,12 @@ fn main() {
 }
 
 fn serve_tcp(listener: TcpListener, sender: crossbeam_channel::Sender<Client>) {
-    println!("TCP up and running...");
+    info!("TCP up and running...");
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let addr = stream.peer_addr().expect("should have peer address in TCP stream");
-                println!("new client connected: {addr:?}");
+                info!("new client connected: {addr:?}");
 
                 let client = Client::new(stream);
                 sender.send(client).expect("send new client to main thread");
