@@ -7,6 +7,7 @@ use soapysdr::Direction::Rx;
 use soapysdr::Device;
 use num_complex::Complex;
 use crossbeam_channel::TryRecvError;
+use log::{error, info, debug};
 
 pub struct Monitor<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> {
     sdr_channel: usize,
@@ -23,7 +24,7 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
 
         dev.set_frequency(Rx, sdr_channel, center_freq as f64, ()).expect("Failed to set frequency");
 
-        println!("Sample rate set to {}", samp_rate);
+        debug!("Sample rate set to {}", samp_rate);
         dev.set_sample_rate(Rx, sdr_channel, samp_rate as f64).expect("Failed to set sample rate");
 
         let average_psd = AveragePsd::<FFT_SIZE, AVG_WINDOW_SIZE>::new(samp_rate, center_freq);
@@ -39,10 +40,10 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
 
 
     pub fn start(&mut self) {
-        println!("Starting stream...");
+        info!("Starting stream...");
         let mut stream = self.dev.rx_stream::<Complex<f32>>(&[self.sdr_channel]).expect("Failed to open RX stream");
         let mtu: usize = stream.mtu().expect("Failed to get MTU");
-        println!("MTU set to {mtu}");
+        debug!("MTU set to {mtu}");
         // the buffer we read IQ data into from the SDR
         let mut buf = vec![Complex::new(0.0, 0.0); mtu];
 
@@ -67,7 +68,7 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
                 Ok(length) => length,
                 Err(e) => match e.code {
                     soapysdr::ErrorCode::Overflow => {
-                        println!("SDR read overflow");
+                        error!("SDR read overflow");
                         continue;
                     },
                     _ => panic!("{}", e),

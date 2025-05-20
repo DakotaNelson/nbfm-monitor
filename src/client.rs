@@ -2,6 +2,7 @@
 
 use std::net::{TcpStream, SocketAddr};
 use std::io::Write;
+use log::{info};
 
 use nbfm_monitor_ui::messages::Message;
 
@@ -29,7 +30,7 @@ impl Client {
     }
 
     pub fn start(&mut self) {
-        println!("Client connected");
+        info!("Client connected");
         loop {
             let msg = self.receiver.recv().expect("should get a message");
 
@@ -44,7 +45,7 @@ impl Client {
                 Ok(_) => {},
                 Err(e) => match e.kind() {
                     std::io::ErrorKind::BrokenPipe => {
-                        println!("Client {0} disconnected (broken pipe)", self.addr);
+                        info!("Client {0} disconnected (broken pipe)", self.addr);
                         break;
                     }
                     _ => panic!("failed to flush TCP socket: {e}"),
