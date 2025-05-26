@@ -4,13 +4,15 @@ mod averagepsd;
 mod monitor;
 mod client;
 
-use colog;
+use config::Config;
 use chrono::Local;
+use colog;
 use colog::format::CologStyle;
+use log::{Level, LevelFilter, error, warn, info, debug, trace};
 use colored::Colorize;
 use std::thread;
 use std::net::TcpListener;
-use log::{Level, LevelFilter, error, warn, info, debug, trace};
+use std::collections::HashMap;
 use crossbeam_channel::{TryRecvError, TrySendError};
 
 use nbfm_monitor_ui::messages::Message;
@@ -24,6 +26,7 @@ const SAMP_RATE: usize = 2_560_000; // 2.56 MHz (for rtlsdr)
 // window of the running average
 const AVG_WINDOW_SIZE: usize = (SAMP_RATE / FFT_SIZE) * 2; // 2 seconds of averaging
 
+// configure logging output style
 pub struct CustomPrefixToken;
 impl CologStyle for CustomPrefixToken {
     fn prefix_token(&self, level: &Level) -> String {
@@ -49,20 +52,28 @@ impl CologStyle for CustomPrefixToken {
 }
 
 fn main() {
-    // TODO take in config
-    // probably YAML or something defining the radios + bands
-    let dev_filter: String = "driver=rtlsdr".to_string();
-    let center_freq: usize = 86_200_000; // where to tune the SDR
-
     // set up logging
     let mut builder = colog::default_builder();
     builder.format(colog::formatter(CustomPrefixToken));
     builder.filter(None, LevelFilter::Trace);
     builder.init();
 
-    info!("Starting...");
+    // load config, set defaults
+    // probably YAML or something defining the radios + bands
+    let settings = Config::builder()
+        .set_default("dev_filter", "driver=rtlsdr").unwrap()
+        .set_default("center_freq", 86_200_000).unwrap()
+        .add_source(config::File::with_name("settings"))
+        .build()
+        .unwrap();
+
+    info!("Started with settings:\n\t{:?}",
+        settings.clone().try_deserialize::<HashMap<String, String>>()
+        .unwrap()
+    );
 
     // enumerate the available SDR devices
+    let dev_filter: String = settings.get("dev_filter").unwrap();
     let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
     let dev_args = match devs.len() {
         0 => {
@@ -86,7 +97,15 @@ fn main() {
     // create monitor(s)
     // TODO only works for one monitor right now
     let dev = soapysdr::Device::new(dev_args).expect("Error opening device");
-    let mut mon = Monitor::<FFT_SIZE, AVG_WINDOW_SIZE>::new(dev, mon_send.clone(), mon_recv.clone(), SAMP_RATE, center_freq);
+    let center_freq: usize = settings.get("center_freq").unwrap();
+    let mut mon = Monitor::<FFT_SIZE, AVG_WINDOW_SIZE>::new(
+        dev,
+        mon_send.clone(),
+        mon_recv.clone(),
+        SAMP_RATE,
+        center_freq,
+    );
+
     // start monitor(s)
     // TODO keep the handles, join() on shutdown
     let _handle = thread::spawn(move || mon.start());
