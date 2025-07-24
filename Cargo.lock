@@ -2440,6 +2440,7 @@ dependencies = [
  "num-complex",
  "plotters",
  "rustfft",
+ "serde",
  "serde_json",
  "signalbool",
  "simple_moving_average",

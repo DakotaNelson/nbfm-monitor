@@ -4,6 +4,7 @@ mod averagepsd;
 mod monitor;
 mod client;
 
+use serde::Deserialize;
 use config::Config;
 use chrono::Local;
 use colog;
@@ -11,8 +12,8 @@ use colog::format::CologStyle;
 use log::{Level, LevelFilter, error, warn, info, debug, trace};
 use colored::Colorize;
 use std::thread;
+use std::thread::JoinHandle;
 use std::net::TcpListener;
-use std::collections::HashMap;
 use crossbeam_channel::{TryRecvError, TrySendError};
 
 use nbfm_monitor_ui::messages::Message;
@@ -51,6 +52,30 @@ impl CologStyle for CustomPrefixToken {
     }
 }
 
+// expected structure of the config file
+
+#[derive(Debug, Deserialize)]
+#[allow(unused)]
+struct AppConfig {
+    radios: Vec<RadioConfig>,
+}
+
+
+#[derive(Debug, Deserialize)]
+#[allow(unused)]
+struct RadioConfig {
+    filter: String,
+    freq: f64, // in MHz - DO NOT forget to convert!
+}
+
+// one SDR monitoring some spectrum
+struct ThreadedMonitor<T> {
+    //monitor: Monitor<FFT_SIZE, AVG_WINDOW_SIZE>,
+    handle: Option<JoinHandle<T>>,
+    send: crossbeam_channel::Sender<Message>,
+    recv: crossbeam_channel::Receiver<Message>,
+}
+
 fn main() {
     // set up logging
     let mut builder = colog::default_builder();
@@ -67,51 +92,60 @@ fn main() {
         .build()
         .unwrap();
 
-    info!("Started with settings:\n\t{:?}",
-        settings.clone().try_deserialize::<HashMap<String, String>>()
-        .unwrap()
+    debug!("Started with settings:\n\t{:?}",
+        settings
     );
 
     // enumerate the available SDR devices
-    let dev_filter: String = settings.get("dev_filter").unwrap();
-    let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
-    let dev_args = match devs.len() {
-        0 => {
-            error!("no matching SDR devices found");
-            std::process::exit(1);
-        }
-        1 => devs.into_iter().next().unwrap(),
-        n => {
-            let mut errlog = String::new().to_owned();
-            for dev in devs {
-                errlog = format!("{errlog}\t'{dev}'");
+    let mut monitors = Vec::new();
+    let radio_configs: Vec<RadioConfig> = settings.get::<Vec<RadioConfig>>("radios").expect("can't get radio configs");
+    for radio in radio_configs {
+        info!("Processing radio: {:?}", radio);
+        let dev_filter: String = radio.filter;
+        let devs = soapysdr::enumerate(&dev_filter[..]).expect("Error listing devices");
+        let dev_args = match devs.len() {
+            0 => {
+                error!("no matching SDR devices found");
+                std::process::exit(1);
             }
-            error!("{} devices found. Choose from: {}", n, errlog);
-            std::process::exit(1);
-        }
-    };
+            1 => devs.into_iter().next().unwrap(),
+            n => {
+                let mut errlog = String::new().to_owned();
+                for dev in devs {
+                    errlog = format!("{errlog}\t'{dev}'");
+                }
+                error!("{} devices found. Choose from: {}", n, errlog);
+                std::process::exit(1);
+            }
+        };
 
-    // set up channel - cloned for each monitor
-    let (mon_send, mon_recv) = crossbeam_channel::unbounded();
+        // set up channel - cloned for each monitor
+        let (mon_send, mon_recv) = crossbeam_channel::unbounded();
 
-    // create monitor(s)
-    // TODO only works for one monitor right now
-    let dev = soapysdr::Device::new(dev_args).expect("Error opening device");
-    let center_freq: usize = settings.get("center_freq").unwrap();
-    let mut mon = Monitor::<FFT_SIZE, AVG_WINDOW_SIZE>::new(
-        dev,
-        mon_send.clone(),
-        mon_recv.clone(),
-        SAMP_RATE,
-        center_freq,
-    );
+        // create monitor(s)
+        let dev = soapysdr::Device::new(dev_args).expect("Error opening device");
+        let center_freq: usize = (radio.freq * 1e6) as usize; // convert from MHz
+        let mut mon = Monitor::<FFT_SIZE, AVG_WINDOW_SIZE>::new(
+            dev,
+            mon_send.clone(),
+            mon_recv.clone(),
+            SAMP_RATE,
+            center_freq,
+        );
 
-    // start monitor(s)
-    // TODO keep the handles, join() on shutdown
-    let _handle = thread::spawn(move || mon.start());
+        // would be cleaner to start these *after* all being created
+        let handle = Some(thread::spawn(move || mon.start()));
+
+        monitors.push(ThreadedMonitor{
+            send: mon_send,
+            recv: mon_recv,
+            handle: handle,
+        });
+
+        info!("Started monitor on {} MHz", radio.freq);
+    }
 
     // start TCP server
-
     let listener = TcpListener::bind("127.0.0.1:8080")
         .expect("should be able to bind to a local port");
 
@@ -134,25 +168,28 @@ fn main() {
         }
 
         // get new frames from the monitors
-        let msg = mon_recv.recv().expect("receive message from monitors");
-        match msg {
-            Message::Frame{ .. } => {
-                // we got a frame, forward it to the clients
-                clients.retain(|client| {
-                    // return true to keep element
-                    // TODO get rid of clone here? (or at least change to copy)
-                    return match client.try_send(msg.clone()) {
-                        Ok(_) => true,
-                        Err(TrySendError::Disconnected(_)) => false,
-                        Err(e) => panic!("message send panic: {e:?}"),
-                    }
-                });
-                //debug!("{:?}", serde_json::to_value(&data).unwrap());
+        for mon in &monitors {
+            let msg = mon.recv.recv().expect("receive message from monitor {mon:?}");
+            match msg {
+                Message::Frame{ .. } => {
+                    // we got a frame, forward it to the clients
+                    clients.retain(|client| {
+                        // return true to keep; prunes disconnected clients
+                        // TODO get rid of clone here? (or at least change to copy)
+                        return match client.try_send(msg.clone()) {
+                            Ok(_) => true,
+                            // TODO write a log message for the disconnect
+                            Err(TrySendError::Disconnected(_)) => false,
+                            Err(e) => panic!("message send panic: {e:?}"),
+                        }
+                    });
+                    //debug!("{:?}", serde_json::to_value(&data).unwrap());
+                }
+                Message::Connect{ .. } => {}
+                Message::ConnectResult{ .. } => {}
+                Message::Error{ .. } => {}
+                Message::Stop {} => {}
             }
-            Message::Connect{ .. } => {}
-            Message::ConnectResult{ .. } => {}
-            Message::Error{ .. } => {}
-            Message::Stop {} => {}
         }
     }
 

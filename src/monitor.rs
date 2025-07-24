@@ -14,7 +14,7 @@ pub struct Monitor<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> {
     average_psd: AveragePsd<FFT_SIZE, AVG_WINDOW_SIZE>,
     dev: Device,
     sender: crossbeam_channel::Sender<Message>,
-    recvr: crossbeam_channel::Receiver<Message>,
+    pub recvr: crossbeam_channel::Receiver<Message>,
 }
 
 impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG_WINDOW_SIZE> {
