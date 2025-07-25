@@ -2,9 +2,9 @@
 
 mod averagepsd;
 mod monitor;
+mod app_config;
 mod client;
 
-use serde::Deserialize;
 use config::Config;
 use chrono::Local;
 use colog;
@@ -19,6 +19,7 @@ use crossbeam_channel::{TryRecvError, TrySendError};
 use nbfm_monitor_ui::messages::Message;
 use crate::monitor::Monitor;
 use crate::client::Client;
+use crate::app_config::RadioConfig;
 
 const FFT_SIZE: usize = 512;
 // TODO figure out how to vary this (or hardcode per-SDR-model? idk)
@@ -52,22 +53,6 @@ impl CologStyle for CustomPrefixToken {
     }
 }
 
-// expected structure of the config file
-
-#[derive(Debug, Deserialize)]
-#[allow(unused)]
-struct AppConfig {
-    radios: Vec<RadioConfig>,
-}
-
-
-#[derive(Debug, Deserialize)]
-#[allow(unused)]
-struct RadioConfig {
-    filter: String,
-    freq: f64, // in MHz - DO NOT forget to convert!
-}
-
 // one SDR monitoring some spectrum
 struct ThreadedMonitor<T> {
     //monitor: Monitor<FFT_SIZE, AVG_WINDOW_SIZE>,
@@ -96,7 +81,6 @@ fn main() {
         settings
     );
 
-    // enumerate the available SDR devices
     let mut monitors = Vec::new();
     let radio_configs: Vec<RadioConfig> = settings.get::<Vec<RadioConfig>>("radios").expect("can't get radio configs");
     for radio in radio_configs {
