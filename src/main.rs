@@ -9,12 +9,15 @@ use config::Config;
 use chrono::Local;
 use colog;
 use colog::format::CologStyle;
-use log::{Level, LevelFilter, error, warn, info, debug, trace};
+use log::{Level, LevelFilter, error, warn, info, debug};
 use colored::Colorize;
 use std::thread;
 use std::thread::JoinHandle;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use crossbeam_channel::{TryRecvError, TrySendError};
+use ctrlc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use nbfm_monitor_ui::messages::Message;
 use crate::monitor::Monitor;
@@ -55,7 +58,6 @@ impl CologStyle for CustomPrefixToken {
 
 // one SDR monitoring some spectrum
 struct ThreadedMonitor<T> {
-    //monitor: Monitor<FFT_SIZE, AVG_WINDOW_SIZE>,
     handle: Option<JoinHandle<T>>,
     send: crossbeam_channel::Sender<Message>,
     recv: crossbeam_channel::Receiver<Message>,
@@ -80,6 +82,12 @@ fn main() {
     debug!("Started with settings:\n\t{:?}",
         settings
     );
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::Relaxed); // ordering shouldn't matter
+    }).expect("Error setting crtl-c handler");
 
     let mut monitors = Vec::new();
     let radio_configs: Vec<RadioConfig> = settings.get::<Vec<RadioConfig>>("radios").expect("can't get radio configs");
@@ -130,21 +138,27 @@ fn main() {
     }
 
     // start TCP server
+    // TODO configure local ip/port
     let listener = TcpListener::bind("127.0.0.1:8080")
         .expect("should be able to bind to a local port");
 
-    info!("TCP listener started on 127.0.0.1:8080"); // TODO
+    let local_addr = listener.local_addr().expect("could not get local TCP addr");
+    info!("TCP listener started on {}", local_addr);
 
-    let (tcp_send, tcp_rcv) = crossbeam_channel::unbounded();
-    let _handle = thread::spawn(move || serve_tcp(listener, tcp_send));
+    let r = running.clone();
+    let (tcp_send, tcp_recv) = crossbeam_channel::unbounded();
+    let tcp_handle = thread::spawn(move || serve_tcp(listener, tcp_send, r));
 
     let mut clients: Vec<crossbeam_channel::Sender<Message>> = Vec::new();
-    loop {
+    let mut handles: Vec<std::thread::JoinHandle<_>> = Vec::new();
+    // this will run until the ctrl-c handler fires
+    while running.load(Ordering::Relaxed) {
         // get any new clients
-        match tcp_rcv.try_recv() {
+        match tcp_recv.try_recv() {
             Ok(mut new_client) => {
                 clients.push(new_client.get_send_channel());
-                let _handle = thread::spawn(move || new_client.start());
+                let handle = thread::spawn(move || new_client.start());
+                handles.push(handle);
                 info!("Client successfully subscribed.");
             }
             Err(TryRecvError::Empty) => {},
@@ -175,21 +189,45 @@ fn main() {
                 Message::Stop {} => {}
             }
         }
-    }
+    } // end main loop
 
-    // eventually, stop
-    // TODO catch ctrl-c and:
-    //   - send STOP to each monitor
+    //   - send STOP to each monitor thread
     //   - send STOP to TCP listener thread
     //   - wait for each thread to join()
-    //
-    // send.send(Message::Stop{}).expect("Should be able to send a message to stop threads");
-    // for handle in handles: handle.join().unwrap();
+    warn!("Shutting down...");
+    for mon in &monitors {
+        mon.send.send(Message::Stop{}).expect("could not send a message to stop threads");
+    }
+
+    // trick to wake up the serve_tcp loop so it hits our return condition
+    let _ = TcpStream::connect(local_addr);
+    tcp_handle.join().expect("could not join TCP handle");
+
+    // stop the TCP clients
+    for client in clients {
+        client.send(Message::Stop{}).expect("could not send stop msg to client");
+    }
+
+    // let monitors join
+    for mon in monitors {
+        if let Some(handle) = mon.handle {
+            handle.join().expect("could not join on monitor thread");
+        }
+    }
+
+    // let TCP clients join
+    for handle in handles {
+        handle.join().expect("could not join client handle");
+    }
 }
 
-fn serve_tcp(listener: TcpListener, sender: crossbeam_channel::Sender<Client>) {
+fn serve_tcp(listener: TcpListener, sender: crossbeam_channel::Sender<Client>, running: Arc<AtomicBool>) {
     info!("TCP up and running...");
     for stream in listener.incoming() {
+        if running.load(Ordering::Relaxed) == false {
+            return;
+        }
+
         match stream {
             Ok(stream) => {
                 let addr = stream.peer_addr().expect("should have peer address in TCP stream");
@@ -203,7 +241,6 @@ fn serve_tcp(listener: TcpListener, sender: crossbeam_channel::Sender<Client>) {
             }
         }
     }
-    // cleanup here
 }
 
 #[cfg(test)]
