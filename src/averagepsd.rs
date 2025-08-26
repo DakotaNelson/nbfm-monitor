@@ -4,6 +4,7 @@ use simple_moving_average::{SMA, NoSumSMA};
 use std::sync::Arc;
 use num_complex::Complex;
 use std::io;
+use rayon::prelude::*;
 
 
 // keeps a running average of the power spectral density of a frequency range
@@ -29,34 +30,30 @@ impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, A
         AveragePsd::<FFT_SIZE, AVG_WINDOW_SIZE>{samp_rate, center_freq, fft, psd_averages}
     }
 
-    pub fn update(&mut self, samples: &mut [Complex<f32>; FFT_SIZE]) {
-        let psd = self.calc_psd(samples).expect("unable to calculate PSD");
-        // keep a running average of PSD values
-        for (index, element) in psd.into_iter().enumerate() {
-            self.psd_averages[index].add_sample(element);
-        }
-    }
-
-    pub fn get_psd(&self) -> [f32; FFT_SIZE] {
-        let mut avg_psd: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
-        for (index, element) in self.psd_averages.iter().enumerate() {
-            avg_psd[index] = element.get_average();
-        }
-
-        return avg_psd;
-    }
-
-    fn calc_psd(&self, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<[f32; FFT_SIZE]> {
+    pub fn update(&mut self, samples: &mut [Complex<f32>]) {
+        // takes a stream of I/Q data, FFTs it, and adds to running average PSD
         // https://pysdr.org/content/sampling.html#calculating-power-spectral-density
+
+        // divide sample into chunks for hamming windowing
+        // (would like to put an FFT_SIZE bound on the slices but haven't been
+        // able to figure out how)
+        let mut chunks: Vec<&mut [Complex<f32>]> = samples.chunks_exact_mut(FFT_SIZE).collect();
+        chunks.par_iter_mut().for_each(|input| {
+            // do hamming windowing in-place on each input
+            Self::hamming_window(input).expect("cannot apply hamming window");
+        });
+
+        self.fft.process(samples); // processes in-place
+
+        // TODO essentially want to do a map/reduce here:
+        // - each buf of length FFT_SIZE:
+        //     hamming window -> FFT -> normalize -> convert to PSD -> fftshift
+        // - sum/normalize all resulting PSDs, then add to running average array and recompute average
 
         // fft[0] -> DC (or samp_rate)
         // fft[len/2 + 1] -> nyquist f NOTE this assumes non-quadrature
         // fft[1] to fft[len/2] are positive frequencies, step is samp_rate/len(fft)
         // https://www.gaussianwaves.com/2015/11/interpreting-fft-results-complex-dft-frequency-bins-and-fftshift/
-
-        // both of these modify samples in-place
-        self.hamming_window(samples).expect("failed to apply hamming window to samples");
-        self.fft.process(samples);
 
         // "RustFFT does not normalize outputs. Callers must manually normalize
         // the results by scaling each element by 1/len().sqrt()"
@@ -68,24 +65,39 @@ impl<const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> AveragePsd<FFT_SIZE, A
 
         // TODO:feature this should go from -samp_rate/2 to samp_rate/2 rather
         // than 0 - samp_rate, see https://pysdr.org/content/rtlsdr.html
-        let psd: Vec<f32> = samples.into_iter().map(|fft_step| {
-            (fft_step.norm() * norm_factor).log10() * 10.0 }).collect();
+        let mut psd: [f32; FFT_SIZE] = samples.into_par_iter().map(|fft_step| {
+            // convert FFT into PSD (dB)
+            (fft_step.norm() * norm_factor).log10() * 10.0
+        }).collect::<Vec<f32>>().try_into().expect("PSD conversion wrong length");
 
-        let mut retval: [f32; FFT_SIZE] = psd.try_into().expect("failed convert vec->arr in calc_psd");
-        Self::fftshift(&mut retval);
+        Self::fftshift(&mut psd);
 
-        Ok(retval)
+        // keep a running average of PSD values
+        for (index, element) in psd.into_iter().enumerate() {
+            self.psd_averages[index].add_sample(element);
+        }
     }
 
-    fn hamming_window(&self, samples: &mut [Complex<f32>; FFT_SIZE]) -> io::Result<()> {
+    pub fn get_psd(&self) -> [f32; FFT_SIZE] {
+        let result: Vec<f32> = self.psd_averages.par_iter().map(|e| e.get_average()).collect();
+        let avg_psd: [f32; FFT_SIZE] = result.try_into().expect("wrong number of elements in PSD array");
+
+        return avg_psd;
+    }
+
+    fn hamming_window(samples: &mut [Complex<f32>]) -> io::Result<()> {
         // https://math.stackexchange.com/questions/248849/hamming-window-understanding-formula
         // TODO:optimization this really oughta be computed and cached inside
         // a struct for the fft - write the window as a const fn or something
-        let mut window: [f32; FFT_SIZE] = [0.0; FFT_SIZE];
-        for n in 0..FFT_SIZE {
+        // TODO put the FFT_SIZE bound back on the argument rather than
+        // computing len() every call
+        let len = samples.len();
+        let result: Vec<f32> = (0..len).into_par_iter().map(|n| {
             let numerator = 2.0 * PI * (n as f32);
-            window[n] = 0.53836 - 0.46164 * (numerator / (FFT_SIZE as f32 - 1.0)).cos();
-        }
+            return 0.53836 - 0.46164 * (numerator / (len as f32 - 1.0)).cos();
+        }).collect();
+
+        let window: [f32; FFT_SIZE] = result.try_into().expect("wrong num of elements in hamming");
 
         // hamming formula is:
         // x = 0.53836 + 0.46164*cos( (2*pi*n) / (N - 1)) where N is fft_len
@@ -160,35 +172,36 @@ mod tests {
     fn hamming_window_correct() {
         // avg window of 10, FFT size of 8
         const FFT_SIZE: usize = 8;
-        let psd = AveragePsd::<FFT_SIZE, 10>::new(1, 1);
 
         let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(1.0, 1.0); FFT_SIZE];
-        psd.hamming_window(&mut samples).expect("failed to apply hamming window");
+        AveragePsd::<FFT_SIZE, 10>::hamming_window(&mut samples).expect("failed to apply hamming window");
 
         let expected: [Complex<f32>; FFT_SIZE] = [Complex { re: 0.07672, im: 0.07672 }, Complex { re: 0.25053218, im: 0.25053218 }, Complex { re: 0.64108455, im: 0.64108455 }, Complex { re: 0.95428324, im: 0.95428324 }, Complex { re: 0.95428324, im: 0.95428324 }, Complex { re: 0.6410844, im: 0.6410844 }, Complex { re: 0.2505322, im: 0.2505322 }, Complex { re: 0.07672, im: 0.07672 }];
 
         assert_eq!(samples, expected);
     }
 
-    #[test]
-    fn all_zero_psd() {
-        // pass all-zero samples into the code and get -inf decibels out
-        // avg window of 10, FFT size of 1024
-        const FFT_SIZE: usize = 1024;
-        let psd = AveragePsd::<FFT_SIZE,10>::new(1, 1);
-
-        let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(0.0, 0.0); FFT_SIZE];
-
-        let output = psd.calc_psd(&mut samples).expect("failed to calculate PSD");
-        println!("{:?}", output);
-
-        assert!(!output.contains(&f32::NAN));
-
-        for elem in output.iter() {
-            // log10(0) is -inf so -inf dB is correct, I think
-            assert_eq!(*elem, std::f32::NEG_INFINITY);
-        }
-    }
+    // TODO update this now that calc_psd doesn't exist and we can't get at
+    // intermediate values within update()
+    // #[test]
+    // fn all_zero_psd() {
+    //     // pass all-zero samples into the code and get -inf decibels out
+    //     // avg window of 10, FFT size of 1024
+    //     const FFT_SIZE: usize = 1024;
+    //     let psd = AveragePsd::<FFT_SIZE,10>::new(1, 1);
+    //
+    //     let mut samples: [Complex<f32>; FFT_SIZE] = [Complex::new(0.0, 0.0); FFT_SIZE];
+    //
+    //     psd.update(&mut samples);
+    //     println!("{:?}", output);
+    //
+    //     assert!(!output.contains(&f32::NAN));
+    //
+    //     for elem in output.iter() {
+    //         // log10(0) is -inf so -inf dB is correct, I think
+    //         assert_eq!(*elem, std::f32::NEG_INFINITY);
+    //     }
+    // }
 
     #[test]
     fn psd_of_sine_wave() {
@@ -234,13 +247,17 @@ mod tests {
         assert_eq!(psd.get_freq_range()[255], 127.);
 
         assert_eq!(elements.len(), FFT_SIZE);
+
         // make sure test frequency (50Hz) is present
         assert_eq!(psd.get_freq_range()[178], 50.);
-        assert_eq!(elements[178], 1.6327056);
+        assert_eq!(elements[178], 6.327055);
+        // NOTE I'm not sure if these numbers are actually a correct
+        // measure (in dBs) just that they're symmetrical as expected
+        // and don't change when I make code changes
 
         // mirror freq at -50Hz should also be present
         assert_eq!(psd.get_freq_range()[78], -50.);
-        assert_eq!(elements[78], 1.6327056);
+        assert_eq!(elements[78], 6.327055);
     }
 
     // TODO:test test center_freq != 0

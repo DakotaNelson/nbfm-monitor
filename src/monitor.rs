@@ -64,7 +64,8 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
                 Err(TryRecvError::Empty) => {},
                 Err(e) => panic!("Panic reading channel in monitor: {e:?}"),
             }
-            let len = match stream.read(&mut [&mut buf[..read_size]], 1_000_000) {
+            // we're still going, so grab data from the SDR
+            let _len = match stream.read(&mut [&mut buf[..read_size]], 1_000_000) {
                 Ok(length) => length,
                 Err(e) => match e.code {
                     soapysdr::ErrorCode::Overflow => {
@@ -74,14 +75,9 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
                     _ => panic!("{}", e),
                 }
             };
-            //println!("Read {} bytes...", len);
+            //println!("Read {} bytes...", _len);
 
-            // TODO parallelize more so we get fewer/no overflows
-            // https://docs.rs/rayon/latest/rayon/ maybe
-            // parallelize each FFT within a buf probably best (vs starting the
-            // next buf of data before this one has finished) - but async on
-            // the send(frame) would probably help too
-            let frame = self.do_fft(len, &buf).expect("Could not do fft");
+            let frame = self.do_fft(&mut buf).expect("Could not do fft");
             self.sender.send(frame).expect("Cannot send to channel from thread");
         }
 
@@ -89,23 +85,12 @@ impl <const FFT_SIZE: usize, const AVG_WINDOW_SIZE: usize> Monitor<FFT_SIZE, AVG
         stream.deactivate(None).expect("failed to deactivate stream");
     }
 
-    fn do_fft(&mut self, len: usize, buf: &Vec<Complex<f32>>) -> Result<Message, &'static str> {
-        // ignore some data so buf is a multiple of FFT_SIZE
-        // can also pad with zeroes
-        let sample_start_index = len % FFT_SIZE;
-
-        // how many FFTs do we need to consume all the samples
-        let fft_size_multiple = (len - sample_start_index) / FFT_SIZE;
-        //print!("Computing {} FFTs...", fft_size_multiple);
+    fn do_fft(&mut self, buf: &mut Vec<Complex<f32>>) -> Result<Message, &'static str> {
         //let start = Instant::now();
 
-        for i in 0..fft_size_multiple {
-            let start = sample_start_index + (i * FFT_SIZE);
-            // "samples" is clobbered by the FFT (computed in-place)
-            let mut samples: [Complex<f32>; FFT_SIZE] = buf[start..start+FFT_SIZE].try_into().expect("incorrect sample length being passed to PSD function");
-            self.average_psd.update(&mut samples);
+        let mut samples: &mut [Complex<f32>] = buf.as_mut_slice();
+        self.average_psd.update(&mut samples);
 
-        }
         //let duration = start.elapsed();
         //println!(" in {:?}", duration);
         // TODO:feature set up the actual "find n highest peaks" functionality
