@@ -13,7 +13,7 @@ use log::{Level, LevelFilter, error, warn, info, debug};
 use colored::Colorize;
 use std::thread;
 use std::thread::JoinHandle;
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, SocketAddr, IpAddr};
 use crossbeam_channel::{TryRecvError, TrySendError};
 use ctrlc;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nbfm_monitor_ui::messages::Message;
 use crate::monitor::Monitor;
 use crate::client::Client;
-use crate::app_config::RadioConfig;
+use crate::app_config::{RadioConfig, TcpConfig};
 
 const FFT_SIZE: usize = 512;
 // TODO figure out how to vary this (or hardcode per-SDR-model? idk)
@@ -71,7 +71,6 @@ fn main() {
     builder.init();
 
     // load config, set defaults
-    // probably YAML or something defining the radios + bands
     let settings = Config::builder()
         .set_default("dev_filter", "driver=rtlsdr").unwrap()
         .set_default("center_freq", 86_200_000).unwrap()
@@ -83,6 +82,7 @@ fn main() {
         settings
     );
 
+    // when ctrl-c is captured, store a bool threads can use to signal a halt
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
@@ -91,6 +91,8 @@ fn main() {
 
     let mut monitors = Vec::new();
     let radio_configs: Vec<RadioConfig> = settings.get::<Vec<RadioConfig>>("radios").expect("can't get radio configs");
+    // TODO: I think right now the same device can be re-used several times
+    // there's no marker for "already attached" I don't think?
     for radio in radio_configs {
         info!("Processing radio: {:?}", radio);
         let dev_filter: String = radio.filter;
@@ -138,8 +140,14 @@ fn main() {
     }
 
     // start TCP server
-    // TODO configure local ip/port
-    let listener = TcpListener::bind("127.0.0.1:8080")
+    let tcp_config: TcpConfig = settings.get::<TcpConfig>("tcp")
+        .expect("can't get TCP config");
+    let octet = tcp_config.ip.parse::<IpAddr>()
+        .expect("should be valid IP address");
+    let addr = SocketAddr::new(octet, tcp_config.port);
+
+    debug!("TCP listener attempting bind on {}", addr);
+    let listener = TcpListener::bind(addr)
         .expect("should be able to bind to a local port");
 
     let local_addr = listener.local_addr().expect("could not get local TCP addr");
