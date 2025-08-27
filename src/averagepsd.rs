@@ -248,17 +248,26 @@ mod tests {
 
         assert_eq!(elements.len(), FFT_SIZE);
 
-        // make sure test frequency (50Hz) is present
+        // make sure test frequency (50Hz) is present in the expected index
         assert_eq!(psd.get_freq_range()[178], 50.);
-        assert_eq!(elements[178], 6.327055);
-        // NOTE I'm not sure if these numbers are actually a correct
-        // measure (in dBs) just that they're symmetrical as expected
+
+        let peak = 6.327055;
+        // NOTE I'm not sure if any numbers are actually a correct
+        // measure (in dBs) just that they're symmetrical (as expected)
         // and don't change when I make code changes
+
+        assert!(elements[177] < peak);
+        assert_eq!(elements[178], peak);
+        assert!(elements[179] < peak);
 
         // mirror freq at -50Hz should also be present
         assert_eq!(psd.get_freq_range()[78], -50.);
-        assert_eq!(elements[78], 6.327055);
-    }
 
-    // TODO:test test center_freq != 0
+        assert!(elements[77] < peak);
+        assert_eq!(elements[78], peak);
+        assert!(elements[79] < peak);
+
+        // center frequency should not be zero
+        assert_ne!(elements[128], 0.0);
+    }
 }
